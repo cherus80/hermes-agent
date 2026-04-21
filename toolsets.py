@@ -36,7 +36,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "image_generate", "hyperframes_video",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -91,8 +91,8 @@ TOOLSETS = {
     },
 
     "video": {
-        "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
-        "tools": ["video_analyze"],
+        "description": "Video analysis and HyperFrames rendering tools",
+        "tools": ["video_analyze", "hyperframes_video"],
         "includes": []
     },
     
@@ -291,7 +291,7 @@ TOOLSETS = {
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": [],
-        "includes": ["web", "vision", "image_gen"]
+        "includes": ["web", "vision", "image_gen", "video"]
     },
     
     # ==========================================================================
