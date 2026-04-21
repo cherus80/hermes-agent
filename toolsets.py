@@ -36,7 +36,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "image_generate", "hyperframes_video",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -88,6 +88,12 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "video": {
+        "description": "Video generation and rendering tools powered by HyperFrames",
+        "tools": ["hyperframes_video"],
         "includes": []
     },
     
@@ -213,7 +219,7 @@ TOOLSETS = {
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": [],
-        "includes": ["web", "vision", "image_gen"]
+        "includes": ["web", "vision", "image_gen", "video"]
     },
     
     # ==========================================================================
