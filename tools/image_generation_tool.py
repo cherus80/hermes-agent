@@ -33,10 +33,14 @@ import logging
 import os
 import datetime
 import threading
+import time
 import uuid
+from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlencode
+import urllib.request
 import fal_client
+import httpx
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -81,10 +85,239 @@ VALID_IMAGE_SIZES = [
 VALID_OUTPUT_FORMATS = ["jpeg", "png"]
 VALID_ACCELERATION_MODES = ["none", "regular", "high"]
 
+KIE_API_BASE_URL = os.getenv("KIE_AI_BASE_URL", "https://api.kie.ai").rstrip("/")
+KIE_TASK_TIMEOUT_SECONDS = 180
+KIE_POLL_INTERVAL_SECONDS = 3
+KIE_SUPPORTED_MODELS = {
+    "gpt-image-2-text-to-image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "gpt image 2 text to image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "4o image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "4o": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "gpt-4o image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "flux 2": {
+        "label": "Flux 2",
+        "provider": "market",
+        "model": "flux-2/flex-text-to-image",
+    },
+    "flux2": {
+        "label": "Flux 2",
+        "provider": "market",
+        "model": "flux-2/flex-text-to-image",
+    },
+    "imagen 4": {
+        "label": "Imagen 4",
+        "provider": "market",
+        "model": "google/imagen4",
+    },
+    "imagen4": {
+        "label": "Imagen 4",
+        "provider": "market",
+        "model": "google/imagen4",
+    },
+    "nano banana 2": {
+        "label": "Nano Banana 2",
+        "provider": "market",
+        "model": "nano-banana-2",
+    },
+    "nanobanana2": {
+        "label": "Nano Banana 2",
+        "provider": "market",
+        "model": "nano-banana-2",
+    },
+}
+KIE_MODEL_PROMPT = (
+    "Для генерации изображения через kie.ai сначала уточни, какую модель использовать: "
+    "gpt-image-2-text-to-image — универсально и лучше для текста в кадре; "
+    "Flux 2 — если нужен более дизайнерский/продакшн-результат; "
+    "Imagen 4 — если нужен фотореализм и рекламные креативы; "
+    "Nano Banana 2 — если нужен быстрый и современный вариант."
+)
+
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 _managed_fal_client = None
 _managed_fal_client_config = None
 _managed_fal_client_lock = threading.Lock()
+
+
+def _get_image_provider() -> str:
+    if os.getenv("KIE_AI_API_KEY"):
+        return "kie"
+    return "fal"
+
+
+def _resolve_kie_model(model_name: str) -> Dict[str, str]:
+    normalized = " ".join(str(model_name or "").strip().lower().split())
+    if not normalized:
+        raise ValueError(KIE_MODEL_PROMPT)
+    model_config = KIE_SUPPORTED_MODELS.get(normalized)
+    if model_config is None:
+        raise ValueError(
+            f"Неизвестная модель '{model_name}'. Доступные варианты: gpt-image-2-text-to-image, Flux 2, Imagen 4, Nano Banana 2."
+        )
+    return model_config
+
+
+def _kie_headers() -> Dict[str, str]:
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise ValueError("KIE_AI_API_KEY environment variable not set")
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _extract_kie_image_url(task_payload: Dict[str, Any]) -> str:
+    data = task_payload.get("data") if isinstance(task_payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("KIE API returned an invalid payload")
+
+    response_payload = data.get("response")
+    if isinstance(response_payload, dict):
+        result_urls = response_payload.get("resultUrls") or response_payload.get("result_urls")
+        if isinstance(result_urls, list) and result_urls:
+            return result_urls[0]
+
+    result_json = data.get("resultJson")
+    if isinstance(result_json, str) and result_json.strip():
+        parsed_result = json.loads(result_json)
+    elif isinstance(result_json, dict):
+        parsed_result = result_json
+    else:
+        parsed_result = {}
+
+    result_urls = parsed_result.get("resultUrls")
+    if isinstance(result_urls, list) and result_urls:
+        return result_urls[0]
+
+    images = data.get("images")
+    if isinstance(images, list) and images:
+        first_image = images[0]
+        if isinstance(first_image, dict) and first_image.get("url"):
+            return first_image["url"]
+        if isinstance(first_image, str):
+            return first_image
+
+    raise ValueError("KIE API did not return any image URLs")
+
+
+def _normalize_kie_aspect_ratio(aspect_ratio: str) -> str:
+    normalized = str(aspect_ratio or DEFAULT_ASPECT_RATIO).strip().lower()
+    return {
+        "landscape": "16:9",
+        "square": "1:1",
+        "portrait": "9:16",
+    }.get(normalized, "1:1")
+
+
+def _default_kie_resolution(model_config: Dict[str, str]) -> str:
+    if model_config.get("model") == "nano-banana-2":
+        return "2K"
+    return "1K"
+
+
+def _kie_local_image_dir() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", "/opt/data"))
+    target = hermes_home / "cache" / "images" / "generated"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _download_kie_image_to_local(image_url: str, model_label: str) -> str:
+    suffix = Path(image_url.split("?", 1)[0]).suffix.lower() or ".png"
+    slug = (
+        str(model_label or "kie")
+        .strip()
+        .lower()
+        .replace(" ", "-")
+        .replace("/", "-")
+    )
+    local_path = _kie_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
+    urllib.request.urlretrieve(image_url, str(local_path))
+    return str(local_path)
+
+
+def _submit_kie_market_task(client: httpx.Client, model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> str:
+    response = client.post(
+        f"{KIE_API_BASE_URL}/api/v1/jobs/createTask",
+        headers=_kie_headers(),
+        json={
+            "model": model_config["model"],
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": _normalize_kie_aspect_ratio(aspect_ratio),
+                "resolution": _default_kie_resolution(model_config),
+            },
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    task_id = payload.get("data", {}).get("taskId") or payload.get("taskId")
+    if not task_id:
+        raise ValueError("KIE API did not return a taskId")
+    return task_id
+
+
+def _poll_kie_market_task(client: httpx.Client, task_id: str) -> Dict[str, Any]:
+    deadline = time.time() + KIE_TASK_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        response = client.get(
+            f"{KIE_API_BASE_URL}/api/v1/jobs/recordInfo",
+            headers=_kie_headers(),
+            params={"taskId": task_id},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        task_data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        state = str(task_data.get("state", "")).lower()
+        if state == "success":
+            return payload
+        if state == "fail":
+            raise ValueError(task_data.get("failMsg") or "KIE image generation task failed")
+        time.sleep(KIE_POLL_INTERVAL_SECONDS)
+
+    raise TimeoutError("KIE image generation timed out")
+
+
+def _generate_image_with_kie(prompt: str, aspect_ratio: str, model_name: Optional[str]) -> Dict[str, Any]:
+    model_config = _resolve_kie_model(model_name)
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        task_id = _submit_kie_market_task(client, model_config, prompt, aspect_ratio)
+        payload = _poll_kie_market_task(client, task_id)
+
+    image_url = _extract_kie_image_url(payload)
+    local_path = None
+    try:
+        local_path = _download_kie_image_to_local(image_url, model_config["label"])
+    except Exception as exc:
+        logger.warning("Failed to download KIE image locally: %s", exc)
+    return {
+        "success": True,
+        "image": image_url,
+        "local_path": local_path,
+        "provider": "kie",
+        "model": model_config["label"],
+    }
 
 
 def _resolve_managed_fal_gateway():
@@ -356,7 +589,8 @@ def image_generate_tool(
     guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
     num_images: int = DEFAULT_NUM_IMAGES,
     output_format: str = DEFAULT_OUTPUT_FORMAT,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    model: Optional[str] = None,
 ) -> str:
     """
     Generate images from text prompts using FAL.ai's FLUX 2 Pro model with automatic upscaling.
@@ -394,6 +628,7 @@ def image_generate_tool(
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "image_size": image_size,
+            "model": model,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_images": num_images,
@@ -409,11 +644,24 @@ def image_generate_tool(
     start_time = datetime.datetime.now()
     
     try:
-        logger.info("Generating %s image(s) with FLUX 2 Pro: %s", num_images, prompt[:80])
+        provider = _get_image_provider()
+        logger.info("Generating %s image(s) with %s provider: %s", num_images, provider, prompt[:80])
         
         # Validate prompt
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
+
+        if provider == "kie":
+            if not model:
+                raise ValueError(KIE_MODEL_PROMPT)
+            result = _generate_image_with_kie(prompt.strip(), aspect_ratio_lower, model)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            debug_call_data["success"] = True
+            debug_call_data["images_generated"] = 1
+            debug_call_data["generation_time"] = generation_time
+            _debug.log_call("image_generate_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
         
         # Check API key availability
         if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
@@ -541,7 +789,7 @@ def check_fal_api_key() -> bool:
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway() or os.getenv("KIE_AI_API_KEY"))
 
 
 def check_image_generation_requirements() -> bool:
@@ -556,6 +804,10 @@ def check_image_generation_requirements() -> bool:
         if not check_fal_api_key():
             return False
         
+        if os.getenv("KIE_AI_API_KEY"):
+            import httpx  # noqa: F401 — SDK presence check
+            return True
+
         # Check if fal_client is available
         import fal_client  # noqa: F401 — SDK presence check
         return True
@@ -656,13 +908,17 @@ from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
-    "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL. Display it using markdown: ![description](URL)",
+    "description": "Generate images from text prompts. Supports FAL FLUX with auto-upscaling, and when KIE is configured supports these user-facing models: gpt-image-2-text-to-image, Flux 2, Imagen 4, Nano Banana 2. If the user did not specify a model for KIE, ask them which one they want before calling this tool. Returns a single image URL and may also include local_path for follow-up uploads. Prefer local_path over manual terminal downloads when it is present. Display remote images using markdown: ![description](URL)",
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
                 "description": "The text prompt describing the desired image. Be detailed and descriptive."
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional model choice for KIE image generation. Use only if the user specified or confirmed one of: gpt-image-2-text-to-image, Flux 2, Imagen 4, Nano Banana 2."
             },
             "aspect_ratio": {
                 "type": "string",
@@ -680,8 +936,11 @@ def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    if _get_image_provider() == "kie" and not args.get("model"):
+        return tool_error(KIE_MODEL_PROMPT, success=False)
     return image_generate_tool(
         prompt=prompt,
+        model=args.get("model"),
         aspect_ratio=args.get("aspect_ratio", "landscape"),
         num_inference_steps=50,
         guidance_scale=4.5,
