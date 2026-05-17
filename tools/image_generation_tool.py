@@ -24,13 +24,13 @@ import json
 import logging
 import os
 import datetime
+import time
 import threading
 import uuid
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
-
-import fal_client
-
+import urllib.request
+import httpx
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -38,6 +38,11 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     prefers_gateway,
 )
+
+try:
+    import fal_client
+except ImportError:  # pragma: no cover - exercised in environment-specific setups
+    fal_client = None
 
 logger = logging.getLogger(__name__)
 
@@ -310,11 +315,481 @@ UPSCALER_GUIDANCE_SCALE = 4
 UPSCALER_NUM_INFERENCE_STEPS = 18
 
 
+GRSAI_API_BASE_URL = os.getenv("GRSAI_BASE_URL", "https://api.grsai.com/v1").rstrip("/")
+GRSAI_TASK_TIMEOUT_SECONDS = 180
+GRSAI_POLL_INTERVAL_SECONDS = 3
+GRSAI_SUPPORTED_MODELS = {
+    "gpt-image-2": {
+        "label": "gpt-image-2",
+        "endpoint": "/draw/completions",
+        "request_format": "gpt_image",
+        "api_model": "gpt-image-2",
+    },
+    "gpt image 2": {
+        "label": "gpt-image-2",
+        "endpoint": "/draw/completions",
+        "request_format": "gpt_image",
+        "api_model": "gpt-image-2",
+    },
+    "gpt-image-2-vip": {
+        "label": "gpt-image-2-vip",
+        "endpoint": "/draw/completions",
+        "request_format": "gpt_image",
+        "api_model": "gpt-image-2-vip",
+    },
+    "gpt image 2 vip": {
+        "label": "gpt-image-2-vip",
+        "endpoint": "/draw/completions",
+        "request_format": "gpt_image",
+        "api_model": "gpt-image-2-vip",
+    },
+    "imagen 4": {
+        "label": "Imagen 4",
+        "endpoint": "/draw/imagen",
+        "request_format": "imagen",
+    },
+    "imagen4": {
+        "label": "Imagen 4",
+        "endpoint": "/draw/imagen",
+        "request_format": "imagen",
+    },
+    "nano-banana-2": {
+        "label": "nano-banana-2",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "2K",
+    },
+    "nano banana 2": {
+        "label": "nano-banana-2",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "2K",
+    },
+    "nano-banana-fast": {
+        "label": "nano-banana-fast",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "1K",
+    },
+    "nano banana fast": {
+        "label": "nano-banana-fast",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "1K",
+    },
+    "nano-banana-pro": {
+        "label": "nano-banana-pro",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "2K",
+    },
+    "nano banana pro": {
+        "label": "nano-banana-pro",
+        "endpoint": "/draw/nano-banana",
+        "request_format": "nano_banana",
+        "image_size": "2K",
+    },
+}
+GRSAI_MODEL_PROMPT = (
+    "Для генерации изображения через GrsAI сначала уточни, какую модель использовать: "
+    "gpt-image-2 — универсально и хорошо рисует текст; "
+    "gpt-image-2-vip — более сильный вариант GPT Image; "
+    "Imagen 4 — если нужен фотореализм; "
+    "nano-banana-2 — если нужен современный креативный стиль; "
+    "nano-banana-fast — если важна скорость; "
+    "nano-banana-pro — если нужен максимум качества в Nano Banana."
+)
+
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 _managed_fal_client = None
 _managed_fal_client_config = None
 _managed_fal_client_lock = threading.Lock()
 
+
+def _get_image_provider(model_name: Optional[str] = None) -> str:
+    normalized_model = " ".join(str(model_name or "").strip().lower().split())
+    forced = str(os.getenv("IMAGE_GENERATION_PROVIDER", "")).strip().lower()
+    if forced in {"grsai", "kie", "fal"}:
+        return forced
+    if os.getenv("GRSAI_API_KEY") and normalized_model in GRSAI_SUPPORTED_MODELS:
+        return "grsai"
+    if os.getenv("KIE_AI_API_KEY"):
+        return "kie"
+    if os.getenv("GRSAI_API_KEY"):
+        return "grsai"
+    return "fal"
+
+
+def _resolve_kie_model(model_name: str) -> Dict[str, str]:
+    normalized = " ".join(str(model_name or "").strip().lower().split())
+    if not normalized:
+        raise ValueError(KIE_MODEL_PROMPT)
+    model_config = KIE_SUPPORTED_MODELS.get(normalized)
+    if model_config is None:
+        raise ValueError(
+            f"Неизвестная модель '{model_name}'. Доступные варианты: gpt-image-2-text-to-image, Flux 2, Imagen 4, Nano Banana 2."
+        )
+    return model_config
+
+
+def _kie_headers() -> Dict[str, str]:
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise ValueError("KIE_AI_API_KEY environment variable not set")
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _grsai_headers() -> Dict[str, str]:
+    api_key = os.getenv("GRSAI_API_KEY")
+    if not api_key:
+        raise ValueError("GRSAI_API_KEY environment variable not set")
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _extract_kie_image_url(task_payload: Dict[str, Any]) -> str:
+    data = task_payload.get("data") if isinstance(task_payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("KIE API returned an invalid payload")
+
+    response_payload = data.get("response")
+    if isinstance(response_payload, dict):
+        result_urls = response_payload.get("resultUrls") or response_payload.get("result_urls")
+        if isinstance(result_urls, list) and result_urls:
+            return result_urls[0]
+
+    result_json = data.get("resultJson")
+    if isinstance(result_json, str) and result_json.strip():
+        parsed_result = json.loads(result_json)
+    elif isinstance(result_json, dict):
+        parsed_result = result_json
+    else:
+        parsed_result = {}
+
+    result_urls = parsed_result.get("resultUrls")
+    if isinstance(result_urls, list) and result_urls:
+        return result_urls[0]
+
+    images = data.get("images")
+    if isinstance(images, list) and images:
+        first_image = images[0]
+        if isinstance(first_image, dict) and first_image.get("url"):
+            return first_image["url"]
+        if isinstance(first_image, str):
+            return first_image
+
+    raise ValueError("KIE API did not return any image URLs")
+
+
+def _extract_grsai_task_id(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError("GrsAI API returned an invalid payload")
+    candidates = [
+        payload.get("taskId"),
+        payload.get("task_id"),
+        payload.get("id"),
+    ]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.extend([
+            data.get("taskId"),
+            data.get("task_id"),
+            data.get("id"),
+        ])
+    for candidate in candidates:
+        if candidate:
+            return str(candidate)
+    raise ValueError("GrsAI API did not return a taskId")
+
+
+def _extract_grsai_image_url(task_payload: Dict[str, Any]) -> str:
+    if not isinstance(task_payload, dict):
+        raise ValueError("GrsAI API returned an invalid payload")
+
+    def _first_url(value: Any) -> Optional[str]:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list) and value:
+            first = value[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+            if isinstance(first, dict):
+                for key in ("url", "imageUrl", "image_url"):
+                    candidate = first.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate.strip()
+        return None
+
+    data = task_payload.get("data")
+    candidates: list[Any] = [task_payload, data]
+    for container in candidates:
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "resultUrls",
+            "result_urls",
+            "imageUrls",
+            "image_urls",
+            "images",
+            "output",
+            "url",
+            "imageUrl",
+            "image_url",
+        ):
+            found = _first_url(container.get(key))
+            if found:
+                return found
+        result_json = container.get("resultJson")
+        if isinstance(result_json, str) and result_json.strip():
+            try:
+                parsed = json.loads(result_json)
+            except Exception:
+                parsed = None
+        elif isinstance(result_json, dict):
+            parsed = result_json
+        else:
+            parsed = None
+        if isinstance(parsed, dict):
+            found = _extract_grsai_image_url(parsed)
+            if found:
+                return found
+    raise ValueError("GrsAI API did not return any image URLs")
+
+
+def _normalize_kie_aspect_ratio(aspect_ratio: str) -> str:
+    normalized = str(aspect_ratio or DEFAULT_ASPECT_RATIO).strip().lower()
+    return {
+        "landscape": "16:9",
+        "square": "1:1",
+        "portrait": "9:16",
+    }.get(normalized, "1:1")
+
+
+def _normalize_grsai_aspect_ratio(aspect_ratio: str) -> str:
+    normalized = str(aspect_ratio or DEFAULT_ASPECT_RATIO).strip().lower()
+    return {
+        "landscape": "16:9",
+        "square": "1:1",
+        "portrait": "9:16",
+    }.get(normalized, "1:1")
+
+
+def _default_kie_resolution(model_config: Dict[str, str]) -> str:
+    if model_config.get("model") == "nano-banana-2":
+        return "2K"
+    return "1K"
+
+
+def _kie_local_image_dir() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", "/opt/data"))
+    target = hermes_home / "cache" / "images" / "generated"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _grsai_local_image_dir() -> Path:
+    return _kie_local_image_dir()
+
+
+def _download_kie_image_to_local(image_url: str, model_label: str) -> str:
+    suffix = Path(image_url.split("?", 1)[0]).suffix.lower() or ".png"
+    slug = (
+        str(model_label or "kie")
+        .strip()
+        .lower()
+        .replace(" ", "-")
+        .replace("/", "-")
+    )
+    local_path = _kie_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
+    urllib.request.urlretrieve(image_url, str(local_path))
+    return str(local_path)
+
+
+def _download_grsai_image_to_local(image_url: str, model_label: str) -> str:
+    suffix = Path(image_url.split("?", 1)[0]).suffix.lower() or ".png"
+    slug = (
+        str(model_label or "grsai")
+        .strip()
+        .lower()
+        .replace(" ", "-")
+        .replace("/", "-")
+    )
+    local_path = _grsai_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
+    urllib.request.urlretrieve(image_url, str(local_path))
+    return str(local_path)
+
+
+def _submit_kie_market_task(client: httpx.Client, model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> str:
+    response = client.post(
+        f"{KIE_API_BASE_URL}/api/v1/jobs/createTask",
+        headers=_kie_headers(),
+        json={
+            "model": model_config["model"],
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": _normalize_kie_aspect_ratio(aspect_ratio),
+                "resolution": _default_kie_resolution(model_config),
+            },
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    task_id = payload.get("data", {}).get("taskId") or payload.get("taskId")
+    if not task_id:
+        raise ValueError("KIE API did not return a taskId")
+    return task_id
+
+
+def _poll_kie_market_task(client: httpx.Client, task_id: str) -> Dict[str, Any]:
+    deadline = time.time() + KIE_TASK_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        response = client.get(
+            f"{KIE_API_BASE_URL}/api/v1/jobs/recordInfo",
+            headers=_kie_headers(),
+            params={"taskId": task_id},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        task_data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        state = str(task_data.get("state", "")).lower()
+        if state == "success":
+            return payload
+        if state == "fail":
+            raise ValueError(task_data.get("failMsg") or "KIE image generation task failed")
+        time.sleep(KIE_POLL_INTERVAL_SECONDS)
+
+    raise TimeoutError("KIE image generation timed out")
+
+
+def _generate_image_with_kie(prompt: str, aspect_ratio: str, model_name: Optional[str]) -> Dict[str, Any]:
+    model_config = _resolve_kie_model(model_name)
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        task_id = _submit_kie_market_task(client, model_config, prompt, aspect_ratio)
+        payload = _poll_kie_market_task(client, task_id)
+
+    image_url = _extract_kie_image_url(payload)
+    local_path = None
+    try:
+        local_path = _download_kie_image_to_local(image_url, model_config["label"])
+    except Exception as exc:
+        logger.warning("Failed to download KIE image locally: %s", exc)
+    return {
+        "success": True,
+        "image": image_url,
+        "local_path": local_path,
+        "provider": "kie",
+        "model": model_config["label"],
+    }
+
+
+def _resolve_grsai_model(model_name: str) -> Dict[str, str]:
+    normalized = " ".join(str(model_name or "").strip().lower().split())
+    if not normalized:
+        raise ValueError(GRSAI_MODEL_PROMPT)
+    model_config = GRSAI_SUPPORTED_MODELS.get(normalized)
+    if model_config is None:
+        raise ValueError(
+            "Неизвестная модель GrsAI "
+            f"'{model_name}'. Доступные варианты: gpt-image-2, gpt-image-2-vip, Imagen 4, "
+            "nano-banana-2, nano-banana-fast, nano-banana-pro."
+        )
+    return model_config
+
+
+def _build_grsai_image_payload(model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+    normalized_ratio = _normalize_grsai_aspect_ratio(aspect_ratio)
+    request_format = model_config.get("request_format", "gpt_image")
+    if request_format == "gpt_image":
+        payload = {
+            "model": model_config.get("api_model", model_config["label"]),
+            "prompt": prompt,
+            "size": "auto",
+            "aspect_ratio": normalized_ratio,
+            "n": 1,
+        }
+        return payload
+    if request_format == "imagen":
+        return {
+            "prompt": prompt,
+            "aspect_ratio": normalized_ratio,
+        }
+    if request_format == "nano_banana":
+        return {
+            "prompt": prompt,
+            "aspect_ratio": normalized_ratio,
+            "image_size": model_config.get("image_size", "1K"),
+        }
+    raise ValueError(f"Unsupported GrsAI request format: {request_format}")
+
+
+def _submit_grsai_task(client: httpx.Client, model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> str:
+    endpoint = model_config["endpoint"]
+    response = client.post(
+        f"{GRSAI_API_BASE_URL}{endpoint}",
+        headers=_grsai_headers(),
+        json=_build_grsai_image_payload(model_config, prompt, aspect_ratio),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return _extract_grsai_task_id(payload)
+
+
+def _poll_grsai_task(client: httpx.Client, task_id: str) -> Dict[str, Any]:
+    deadline = time.time() + GRSAI_TASK_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        response = client.post(
+            f"{GRSAI_API_BASE_URL}/draw/result",
+            headers=_grsai_headers(),
+            json={"taskId": task_id},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        task_data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        state = str(
+            task_data.get("state")
+            or task_data.get("status")
+            or payload.get("state")
+            or payload.get("status")
+            or ""
+        ).lower()
+        if state in {"success", "succeeded", "done", "completed"}:
+            return payload
+        if state in {"fail", "failed", "error"}:
+            raise ValueError(
+                task_data.get("failMsg")
+                or task_data.get("message")
+                or payload.get("message")
+                or "GrsAI image generation task failed"
+            )
+        time.sleep(GRSAI_POLL_INTERVAL_SECONDS)
+
+    raise TimeoutError("GrsAI image generation timed out")
+
+
+def _generate_image_with_grsai(prompt: str, aspect_ratio: str, model_name: Optional[str]) -> Dict[str, Any]:
+    model_config = _resolve_grsai_model(model_name or "")
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        task_id = _submit_grsai_task(client, model_config, prompt, aspect_ratio)
+        payload = _poll_grsai_task(client, task_id)
+
+    image_url = _extract_grsai_image_url(payload)
+    local_path = None
+    try:
+        local_path = _download_grsai_image_to_local(image_url, model_config["label"])
+    except Exception as exc:
+        logger.warning("Failed to download GrsAI image locally: %s", exc)
+    return {
+        "success": True,
+        "image": image_url,
+        "local_path": local_path,
+        "provider": "grsai",
+        "model": model_config["label"],
+    }
 
 # ---------------------------------------------------------------------------
 # Managed FAL gateway (Nous Subscription)
@@ -338,6 +813,8 @@ class _ManagedFalSyncClient:
     """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
+        if fal_client is None:
+            raise RuntimeError("fal_client is required for managed FAL gateway mode")
         sync_client_class = getattr(fal_client, "SyncClient", None)
         if sync_client_class is None:
             raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
@@ -435,6 +912,8 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
+    if fal_client is None:
+        raise RuntimeError("fal_client is not installed")
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
@@ -617,6 +1096,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 # ---------------------------------------------------------------------------
 def image_generate_tool(
     prompt: str,
+    model: Optional[str] = None,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
@@ -637,9 +1117,10 @@ def image_generate_tool(
     model_id, meta = _resolve_fal_model()
 
     debug_call_data = {
-        "model": model_id,
+        "model": model or model_id,
         "parameters": {
             "prompt": prompt,
+            "model": model,
             "aspect_ratio": aspect_ratio,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
@@ -656,14 +1137,14 @@ def image_generate_tool(
     start_time = datetime.datetime.now()
 
     try:
+        provider = _get_image_provider(model)
+        logger.info(
+            "Generating %s image(s) with %s provider: %s",
+            num_images, provider, prompt[:80],
+        )
+
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
-
-        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
@@ -672,6 +1153,36 @@ def image_generate_tool(
                 aspect_ratio, DEFAULT_ASPECT_RATIO,
             )
             aspect_lc = DEFAULT_ASPECT_RATIO
+
+        if provider == "kie":
+            if not model:
+                raise ValueError(KIE_MODEL_PROMPT)
+            result = _generate_image_with_kie(prompt.strip(), aspect_lc, model)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            debug_call_data["success"] = True
+            debug_call_data["images_generated"] = 1
+            debug_call_data["generation_time"] = generation_time
+            _debug.log_call("image_generate_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
+
+        if provider == "grsai":
+            if not model:
+                raise ValueError(GRSAI_MODEL_PROMPT)
+            result = _generate_image_with_grsai(prompt.strip(), aspect_lc, model)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            debug_call_data["success"] = True
+            debug_call_data["images_generated"] = 1
+            debug_call_data["generation_time"] = generation_time
+            _debug.log_call("image_generate_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
+
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
+            message = "FAL_KEY environment variable not set"
+            if managed_nous_tools_enabled():
+                message += " and managed FAL gateway is unavailable"
+            raise ValueError(message)
 
         overrides: Dict[str, Any] = {}
         if num_inference_steps is not None:
@@ -769,8 +1280,13 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    """True if any built-in image backend credentials are available."""
+    return bool(
+        fal_key_is_configured()
+        or _resolve_managed_fal_gateway()
+        or os.getenv("KIE_AI_API_KEY")
+        or os.getenv("GRSAI_API_KEY")
+    )
 
 
 def check_image_generation_requirements() -> bool:
@@ -788,7 +1304,11 @@ def check_image_generation_requirements() -> bool:
     """
     try:
         if check_fal_api_key():
-            fal_client  # noqa: F401 — SDK presence check
+            if os.getenv("KIE_AI_API_KEY") or os.getenv("GRSAI_API_KEY"):
+                httpx  # noqa: F401 — dependency presence check
+                return True
+            if fal_client is None:
+                raise ImportError("fal_client library not available")
             return True
     except ImportError:
         pass
@@ -815,22 +1335,22 @@ def check_image_generation_requirements() -> bool:
 # Demo / CLI entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("🎨 Image Generation Tools — FAL.ai multi-model support")
+    print("🎨 Image Generation Tools — multi-provider support")
     print("=" * 60)
 
     if not check_fal_api_key():
-        print("❌ FAL_KEY environment variable not set")
-        print("   Set it via: export FAL_KEY='your-key-here'")
-        print("   Get a key: https://fal.ai/")
+        print("❌ Ни FAL_KEY, ни KIE_AI_API_KEY, ни GRSAI_API_KEY не настроены")
+        print("   Для FAL: export FAL_KEY='your-key-here'")
+        print("   Для GrsAI: export GRSAI_API_KEY='your-key-here'")
+        print("   Для KIE: export KIE_AI_API_KEY='your-key-here'")
         raise SystemExit(1)
-    print("✅ FAL.ai API key found")
+    print("✅ Image generation credentials found")
 
-    try:
-        import fal_client  # noqa: F401
+    if _get_image_provider() == "fal":
+        if fal_client is None:
+            print("❌ fal_client library not found — pip install fal-client")
+            raise SystemExit(1)
         print("✅ fal_client library available")
-    except ImportError:
-        print("❌ fal_client library not found — pip install fal-client")
-        raise SystemExit(1)
 
     model_id, meta = _resolve_fal_model()
     print(f"🤖 Active model: {meta.get('display', model_id)} ({model_id})")
@@ -841,9 +1361,13 @@ if __name__ == "__main__":
     for mid, m in FAL_MODELS.items():
         marker = " ← active" if mid == model_id else ""
         print(f"  {mid:<32}  {m.get('speed', '?'):<6}  {m.get('price', '?')}{marker}")
-
     if _debug.active:
         print(f"\n🐛 Debug mode enabled — session {_debug.session_id}")
+
+
+def get_debug_session_info() -> Dict[str, Any]:
+    """Return information about the current debug session."""
+    return _debug.get_session_info()
 
 
 # ---------------------------------------------------------------------------
@@ -855,10 +1379,11 @@ IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
         "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "backend is user-configured and may use FAL, KIE, GrsAI, or a "
+        "plugin provider. If the active backend requires an explicit model "
+        "and the user did not specify one, ask first. Returns either a URL "
+        "or an absolute file path in the `image` field; display it with "
+        "markdown ![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
@@ -998,6 +1523,7 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    model = args.get("model") or _read_configured_image_model()
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -1005,9 +1531,19 @@ def _handle_image_generate(args, **kw):
     if dispatched is not None:
         return dispatched
 
+    provider = _get_image_provider(model)
+    if provider == "kie" and not model:
+        return tool_error(KIE_MODEL_PROMPT, success=False)
+    if provider == "grsai" and not model:
+        return tool_error(GRSAI_MODEL_PROMPT, success=False)
     return image_generate_tool(
         prompt=prompt,
+        model=model,
         aspect_ratio=aspect_ratio,
+        num_inference_steps=50,
+        guidance_scale=4.5,
+        num_images=1,
+        output_format="png",
     )
 
 
