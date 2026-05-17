@@ -136,6 +136,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    "grsai": [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gpt-4o-mini",
+    ],
     "xai": [
         "grok-4.20-0309-reasoning",
         "grok-4.20-0309-non-reasoning",
@@ -486,6 +495,7 @@ _PROVIDER_LABELS = {
     "copilot": "GitHub Copilot",
     "gemini": "Google AI Studio",
     "zai": "Z.AI / GLM",
+    "grsai": "GrsAI",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
@@ -507,6 +517,8 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "grs": "grsai",
+    "grs-ai": "grsai",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -826,7 +838,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "zai", "grsai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
@@ -1194,6 +1206,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
                 if live:
                     return live
+        except Exception:
+            pass
+    if normalized == "grsai":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("grsai")
+            live = fetch_api_models(
+                creds.get("api_key", ""),
+                creds.get("base_url", ""),
+            )
+            if live:
+                return live
         except Exception:
             pass
     if normalized == "anthropic":

@@ -1678,6 +1678,8 @@ class HermesCLI:
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
+        self._base_requested_provider = self.requested_provider
+        self._session_provider_choice: Optional[str] = None
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
@@ -3987,6 +3989,8 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self._session_provider_choice = None
+        self.requested_provider = self._base_requested_provider
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -4345,6 +4349,43 @@ class HermesCLI:
         else:
             _ask()
         return result[0]
+
+    def _ensure_session_provider_choice(self) -> bool:
+        """Ask which provider to use at the start of a new session."""
+        if self.conversation_history or self._session_provider_choice:
+            return True
+
+        try:
+            from hermes_cli.dual_provider import (
+                DUAL_PROVIDER_IDS,
+                DUAL_PROVIDER_PRIMARY,
+                dual_provider_cli_prompt,
+                dual_provider_prompt_enabled,
+                normalize_dual_provider_choice,
+            )
+        except Exception:
+            return True
+
+        if not dual_provider_prompt_enabled():
+            return True
+
+        default_provider = (
+            self._base_requested_provider
+            if self._base_requested_provider in DUAL_PROVIDER_IDS
+            else DUAL_PROVIDER_PRIMARY
+        )
+        prompt_text, default_choice = dual_provider_cli_prompt(default_provider=default_provider)
+
+        while True:
+            raw = self._prompt_text_input(prompt_text)
+            if raw is None:
+                return False
+            choice = normalize_dual_provider_choice(raw) if raw.strip() else default_choice
+            if choice:
+                self._session_provider_choice = choice
+                self.requested_provider = choice
+                return True
+            _cprint("  Введите `openrouter` или `grsai`.")
 
     def _interactive_provider_selection(
         self, providers: list, current_model: str, current_provider: str
@@ -7431,6 +7472,9 @@ class HermesCLI:
         if isinstance(message, str):
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
+
+        if not self._ensure_session_provider_choice():
+            return None
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})

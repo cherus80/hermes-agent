@@ -7157,6 +7157,71 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    @staticmethod
+    def _runtime_override_for_provider(provider: str) -> dict[str, Any]:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=provider)
+        return {
+            "provider": runtime.get("provider"),
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "api_mode": runtime.get("api_mode"),
+        }
+
+    def _gate_dual_provider_session_start(
+        self,
+        *,
+        source: SessionSource,
+        session_key: Optional[str],
+        history: List[Dict[str, Any]],
+        message: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Ask for OpenRouter vs GrsAI at the start of a new session."""
+        if not session_key:
+            return message, None
+
+        try:
+            from hermes_cli.dual_provider import (
+                dual_provider_prompt_enabled,
+                dual_provider_prompt_text,
+                normalize_dual_provider_choice,
+            )
+        except Exception:
+            return message, None
+
+        if not dual_provider_prompt_enabled():
+            return message, None
+
+        session_entry = self.session_store.get_or_create_session(source)
+        if session_entry.selected_provider:
+            self._session_model_overrides[session_key] = self._runtime_override_for_provider(
+                session_entry.selected_provider,
+            )
+            return message, None
+
+        if history:
+            return message, None
+
+        if session_entry.provider_selection_pending:
+            choice = normalize_dual_provider_choice(message)
+            if not choice:
+                return None, dual_provider_prompt_text(retry=True)
+
+            session_entry.selected_provider = choice
+            session_entry.provider_selection_pending = False
+            pending_message = session_entry.pending_provider_message or ""
+            session_entry.pending_provider_message = None
+            self._session_model_overrides[session_key] = self._runtime_override_for_provider(choice)
+            self._evict_cached_agent(session_key)
+            self.session_store._save()
+            return pending_message or message, None
+
+        session_entry.provider_selection_pending = True
+        session_entry.pending_provider_message = message
+        self.session_store._save()
+        return None, dual_provider_prompt_text()
+
     async def _run_agent(
         self,
         message: str,
@@ -7185,6 +7250,21 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+
+        message, provider_gate_response = self._gate_dual_provider_session_start(
+            source=source,
+            session_key=session_key,
+            history=history,
+            message=message,
+        )
+        if provider_gate_response:
+            return {
+                "final_response": provider_gate_response,
+                "messages": history,
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+            }
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))

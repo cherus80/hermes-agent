@@ -77,6 +77,12 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "openai-codex",
 })
 
+# Providers that want the bare model id even when users pass an
+# aggregator-style ``vendor/model`` slug copied from OpenRouter.
+_STRIP_ANY_VENDOR_PROVIDERS: frozenset[str] = frozenset({
+    "grsai",
+})
+
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
@@ -366,6 +372,10 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return name.split("/", 1)[1]
         return stripped
 
+    # --- Bare-name providers: always strip vendor/model prefixes ---
+    if provider in _STRIP_ANY_VENDOR_PROVIDERS:
+        return _strip_vendor_prefix(name)
+
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
         bare = _strip_matching_provider_prefix(name, provider)
@@ -388,4 +398,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

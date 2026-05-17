@@ -83,6 +83,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "grsai": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GRSAI_API_KEY",),
+        base_url_override="https://api.grsai.com/v1",
+        base_url_env_var="GRSAI_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -171,6 +177,8 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "grs": "grsai",
+    "grs-ai": "grsai",
 
     # xai
     "x-ai": "xai",
@@ -250,6 +258,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "grsai": "GrsAI",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
 }
