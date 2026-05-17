@@ -246,6 +246,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    "grsai": [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gpt-4o-mini",
+    ],
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
@@ -619,7 +628,6 @@ def check_nous_free_tier() -> bool:
         _free_tier_cache = (False, now)
         return False  # default to paid on error — don't block users
 
-
 # ---------------------------------------------------------------------------
 # Nous Portal recommended models
 #
@@ -805,6 +813,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
+    ProviderEntry("grsai",          "GrsAI",                    "GrsAI (direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com) & Moonshot API"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (agent/coding models via Step Plan API)"),
@@ -846,12 +855,13 @@ except Exception:
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
-
 _PROVIDER_ALIASES = {
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "grs": "grsai",
+    "grs-ai": "grsai",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -1411,7 +1421,6 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
@@ -1982,6 +1991,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             creds = resolve_nous_runtime_credentials()
             if creds:
                 live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "grsai":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("grsai")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
                 if live:
                     return live
         except Exception:

@@ -474,6 +474,11 @@ class SessionEntry:
     # restarts — prevents redundant finalization runs.
     expiry_finalized: bool = False
 
+    # Session-scoped provider chooser for the OpenRouter/GrsAI pair.
+    selected_provider: Optional[str] = None
+    provider_selection_pending: bool = False
+    pending_provider_message: Optional[str] = None
+
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
@@ -509,6 +514,9 @@ class SessionEntry:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
+            "selected_provider": self.selected_provider,
+            "provider_selection_pending": self.provider_selection_pending,
+            "pending_provider_message": self.pending_provider_message,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
@@ -562,6 +570,9 @@ class SessionEntry:
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
+            selected_provider=data.get("selected_provider"),
+            provider_selection_pending=data.get("provider_selection_pending", False),
+            pending_provider_message=data.get("pending_provider_message"),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),

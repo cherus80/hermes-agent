@@ -1600,6 +1600,16 @@ class AIAgent:
             self._fallback_chain = [fallback_model]
         else:
             self._fallback_chain = []
+        try:
+            from hermes_cli.dual_provider import build_dual_provider_fallbacks
+
+            self._fallback_chain = build_dual_provider_fallbacks(
+                primary_provider=self.provider,
+                model=self.model,
+                configured_fallbacks=self._fallback_chain,
+            )
+        except Exception:
+            pass
         self._fallback_index = 0
         self._fallback_activated = getattr(self, "_fallback_activated", False)
         # Legacy attribute kept for backward compat (tests, external callers)

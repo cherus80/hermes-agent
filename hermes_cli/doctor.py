@@ -40,6 +40,7 @@ _PROVIDER_ENV_HINTS = (
     "GLM_API_KEY",
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
+    "GRSAI_API_KEY",
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
@@ -201,6 +202,7 @@ def _build_apikey_providers_list() -> list:
     """
     _static = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("GrsAI",           ("GRSAI_API_KEY",),                              "https://api.grsai.com/v1/models",     "GRSAI_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("StepFun Step Plan", ("STEPFUN_API_KEY",),                          "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
@@ -225,7 +227,7 @@ def _build_apikey_providers_list() -> list:
     # don't create duplicate entries for providers already in the static list.
     _known_canonical: set[str] = set()
     _name_to_canonical = {
-        "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-coding",
+        "Z.AI / GLM": "zai", "GrsAI": "grsai", "Kimi / Moonshot": "kimi-coding",
         "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
