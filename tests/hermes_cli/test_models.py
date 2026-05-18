@@ -57,6 +57,12 @@ class TestOpenRouterModels:
         """Sanity check that the models list hasn't been accidentally truncated."""
         assert len(OPENROUTER_MODELS) >= 5
 
+    def test_requested_models_are_in_static_snapshot(self):
+        ids = {mid for mid, _ in OPENROUTER_MODELS}
+        assert "openrouter/owl-alpha" in ids
+        assert "openai/gpt-oss-120b:free" in ids
+        assert "z-ai/glm-4.5-air:free" in ids
+
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
