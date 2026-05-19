@@ -739,6 +739,38 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
 
+## Docker Runtime Notes
+
+When this fork is used from the local Docker deployment under
+`/Users/ruslancernov/Documents/Hermes Агент`, do **not** assume the outer
+Codex shell environment matches the live Hermes runtime.
+
+- The real inference + tool runtime is the `hermes-local` container.
+- Provider secrets such as `GRSAI_API_KEY`, `KIE_AI_API_KEY`,
+  `OPENROUTER_API_KEY`, Telegram tokens, and similar may exist **only**
+  in `/opt/data/.env` inside that runtime.
+- A missing env var in the outer shell does **not** mean the feature is
+  unconfigured in Hermes.
+
+Operational rule for this deployment:
+- Validate GrsAI, Kie.ai, OpenRouter, Telegram gateway, and image
+  generation from inside the Hermes runtime first.
+- Prefer checks like `docker exec hermes-local ...` or the Hermes
+  runtime itself over ad-hoc guesses from the host shell.
+- Do not conclude that GrsAI "has no API" or that image generation is
+  unavailable until the check has been performed inside the container.
+
+For this deployment specifically:
+- `GrsAI` image generation is implemented in
+  `tools/image_generation_tool.py` and is known to use non-OpenAI
+  response shapes such as SSE/text-event-stream.
+- `Kie.ai` image generation is also wired through
+  `tools/image_generation_tool.py`.
+- If a model/provider works in Hermes but not in the outer shell, the
+  container runtime is the source of truth.
+
+---
+
 ## Important Policies
 
 ### Prompt Caching Must Not Break
