@@ -1585,7 +1585,11 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+        if (
+            provider in current_keys
+            or provider in _AGGREGATOR_PROVIDERS
+            or provider == "grsai"
+        ):
             continue
         if matched := _match(provider):
             return provider, matched

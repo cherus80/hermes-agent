@@ -223,6 +223,14 @@ class TestTelegramBotCommands:
             assert isinstance(name, str)
             assert isinstance(desc, str)
 
+    def test_uses_human_friendly_russian_descriptions_for_telegram_menu(self):
+        desc_by_name = dict(telegram_bot_commands())
+
+        assert desc_by_name["new"] == "Начать новый диалог"
+        assert desc_by_name["retry"] == "Повторить последний запрос"
+        assert desc_by_name["undo"] == "Удалить последний обмен сообщениями"
+        assert desc_by_name["sethome"] == "Сделать этот чат основным"
+
     def test_no_hyphens_in_command_names(self):
         """Telegram does not support hyphens in command names."""
         for name, _ in telegram_bot_commands():

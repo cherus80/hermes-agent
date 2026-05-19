@@ -49,10 +49,10 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # fails with EACCES (node_modules/ is root-owned from build time).
 ENV npm_config_install_links=false
 
-RUN npm install --prefer-offline --no-audit && \
+RUN npm install --prefer-offline --no-audit --registry=https://registry.npmmirror.com/ && \
     npx playwright install --with-deps chromium --only-shell && \
-    (cd web && npm install --prefer-offline --no-audit) && \
-    (cd ui-tui && npm install --prefer-offline --no-audit) && \
+    (cd web && npm install --prefer-offline --no-audit --registry=https://registry.npmmirror.com/) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit --registry=https://registry.npmmirror.com/) && \
     npm cache clean --force
 
 # ---------- Source code ----------

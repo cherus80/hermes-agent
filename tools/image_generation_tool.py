@@ -27,17 +27,28 @@ import datetime
 import time
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 import urllib.request
 import httpx
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import (
-    fal_key_is_configured,
-    managed_nous_tools_enabled,
-    prefers_gateway,
-)
+try:
+    from tools.tool_backend_helpers import (
+        fal_key_is_configured,
+        managed_nous_tools_enabled,
+        prefers_gateway,
+    )
+except Exception:  # pragma: no cover - compatibility for isolated tests
+    def fal_key_is_configured() -> bool:
+        return bool(str(os.getenv("FAL_KEY", "")).strip())
+
+    def managed_nous_tools_enabled() -> bool:
+        return False
+
+    def prefers_gateway(_tool_name: str) -> bool:
+        return False
 
 try:
     import fal_client
@@ -313,6 +324,75 @@ UPSCALER_CREATIVITY = 0.35
 UPSCALER_RESEMBLANCE = 0.6
 UPSCALER_GUIDANCE_SCALE = 4
 UPSCALER_NUM_INFERENCE_STEPS = 18
+
+
+KIE_API_BASE_URL = os.getenv("KIE_AI_BASE_URL", "https://api.kie.ai").rstrip("/")
+KIE_TASK_TIMEOUT_SECONDS = 180
+KIE_POLL_INTERVAL_SECONDS = 3
+KIE_SUPPORTED_MODELS = {
+    "gpt-image-2-text-to-image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "gpt image 2 text to image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "4o image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "4o": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "gpt-4o image": {
+        "label": "gpt-image-2-text-to-image",
+        "provider": "market",
+        "model": "gpt-image-2-text-to-image",
+    },
+    "flux 2": {
+        "label": "Flux 2",
+        "provider": "market",
+        "model": "flux-2/flex-text-to-image",
+    },
+    "flux2": {
+        "label": "Flux 2",
+        "provider": "market",
+        "model": "flux-2/flex-text-to-image",
+    },
+    "imagen 4": {
+        "label": "Imagen 4",
+        "provider": "market",
+        "model": "google/imagen4",
+    },
+    "imagen4": {
+        "label": "Imagen 4",
+        "provider": "market",
+        "model": "google/imagen4",
+    },
+    "nano banana 2": {
+        "label": "Nano Banana 2",
+        "provider": "market",
+        "model": "nano-banana-2",
+    },
+    "nanobanana2": {
+        "label": "Nano Banana 2",
+        "provider": "market",
+        "model": "nano-banana-2",
+    },
+}
+KIE_MODEL_PROMPT = (
+    "Для генерации изображения через kie.ai сначала уточни, какую модель использовать: "
+    "gpt-image-2-text-to-image — универсально и лучше для текста в кадре; "
+    "Flux 2 — если нужен более дизайнерский/продакшн-результат; "
+    "Imagen 4 — если нужен фотореализм и рекламные креативы; "
+    "Nano Banana 2 — если нужен быстрый и современный вариант."
+)
 
 
 GRSAI_API_BASE_URL = os.getenv("GRSAI_BASE_URL", "https://api.grsai.com/v1").rstrip("/")
