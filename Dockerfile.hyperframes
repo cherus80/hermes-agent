@@ -17,6 +17,7 @@ RUN apt-get update && \
         curl \
         ffmpeg \
         gcc \
+        gosu \
         libffi-dev \
         procps \
         python3-dev \
@@ -24,6 +25,8 @@ RUN apt-get update && \
         ripgrep \
         xz-utils && \
     rm -rf /var/lib/apt/lists/*
+
+RUN useradd -u 10000 -m -d /opt/data hermes
 
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
