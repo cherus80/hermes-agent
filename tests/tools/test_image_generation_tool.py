@@ -247,13 +247,27 @@ def test_downloads_kie_image_to_local_cache(monkeypatch, tmp_path):
 
     downloaded = {}
 
-    def _fake_urlretrieve(url, destination):
-        Path(destination).write_bytes(b"png-bytes")
-        downloaded["url"] = url
-        downloaded["destination"] = destination
-        return destination, None
+    class _FakeDownloadResponse:
+        content = b"png-bytes"
 
-    monkeypatch.setattr(image_generation_tool.urllib.request, "urlretrieve", _fake_urlretrieve)
+        def raise_for_status(self):
+            return None
+
+    class _FakeDownloadClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            downloaded["url"] = url
+            return _FakeDownloadResponse()
+
+    monkeypatch.setattr(image_generation_tool.httpx, "Client", _FakeDownloadClient)
 
     result = image_generation_tool._download_kie_image_to_local(
         "https://tempfile.aiquickdraw.com/h/example.png",

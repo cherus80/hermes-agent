@@ -692,7 +692,10 @@ def _download_kie_image_to_local(image_url: str, model_label: str) -> str:
         .replace("/", "-")
     )
     local_path = _kie_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
-    urllib.request.urlretrieve(image_url, str(local_path))
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        response = client.get(image_url)
+        response.raise_for_status()
+        local_path.write_bytes(response.content)
     return str(local_path)
 
 
@@ -706,7 +709,10 @@ def _download_grsai_image_to_local(image_url: str, model_label: str) -> str:
         .replace("/", "-")
     )
     local_path = _grsai_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
-    urllib.request.urlretrieve(image_url, str(local_path))
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        response = client.get(image_url)
+        response.raise_for_status()
+        local_path.write_bytes(response.content)
     return str(local_path)
 
 
