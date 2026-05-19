@@ -380,6 +380,11 @@ KIE_SUPPORTED_MODELS = {
         "provider": "market",
         "model": "nano-banana-2",
     },
+    "nano-banana-2": {
+        "label": "Nano Banana 2",
+        "provider": "market",
+        "model": "nano-banana-2",
+    },
     "nanobanana2": {
         "label": "Nano Banana 2",
         "provider": "market",
@@ -613,6 +618,7 @@ def _extract_grsai_image_url(task_payload: Dict[str, Any]) -> str:
         for key in (
             "resultUrls",
             "result_urls",
+            "results",
             "imageUrls",
             "image_urls",
             "images",
@@ -702,6 +708,28 @@ def _download_grsai_image_to_local(image_url: str, model_label: str) -> str:
     local_path = _grsai_local_image_dir() / f"{slug}-{uuid.uuid4().hex}{suffix}"
     urllib.request.urlretrieve(image_url, str(local_path))
     return str(local_path)
+
+
+def _extract_grsai_sse_payload(raw_text: str) -> Dict[str, Any]:
+    """Parse the terminal payload from a GrsAI SSE response."""
+    final_payload: Optional[Dict[str, Any]] = None
+    for raw_line in str(raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload_text = line[5:].strip()
+        if not payload_text:
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            final_payload = payload
+
+    if not final_payload:
+        raise ValueError("GrsAI SSE response did not contain a terminal payload")
+    return final_payload
 
 
 def _submit_kie_market_task(client: httpx.Client, model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> str:
@@ -807,7 +835,12 @@ def _build_grsai_image_payload(model_config: Dict[str, str], prompt: str, aspect
     raise ValueError(f"Unsupported GrsAI request format: {request_format}")
 
 
-def _submit_grsai_task(client: httpx.Client, model_config: Dict[str, str], prompt: str, aspect_ratio: str) -> str:
+def _submit_grsai_task(
+    client: httpx.Client,
+    model_config: Dict[str, str],
+    prompt: str,
+    aspect_ratio: str,
+) -> Union[str, Dict[str, Any]]:
     endpoint = model_config["endpoint"]
     response = client.post(
         f"{GRSAI_API_BASE_URL}{endpoint}",
@@ -815,6 +848,9 @@ def _submit_grsai_task(client: httpx.Client, model_config: Dict[str, str], promp
         json=_build_grsai_image_payload(model_config, prompt, aspect_ratio),
     )
     response.raise_for_status()
+    content_type = str(getattr(response, "headers", {}).get("content-type", "")).lower()
+    if "text/event-stream" in content_type:
+        return _extract_grsai_sse_payload(response.text)
     payload = response.json()
     return _extract_grsai_task_id(payload)
 
@@ -854,8 +890,11 @@ def _poll_grsai_task(client: httpx.Client, task_id: str) -> Dict[str, Any]:
 def _generate_image_with_grsai(prompt: str, aspect_ratio: str, model_name: Optional[str]) -> Dict[str, Any]:
     model_config = _resolve_grsai_model(model_name or "")
     with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-        task_id = _submit_grsai_task(client, model_config, prompt, aspect_ratio)
-        payload = _poll_grsai_task(client, task_id)
+        submit_result = _submit_grsai_task(client, model_config, prompt, aspect_ratio)
+        if isinstance(submit_result, dict):
+            payload = submit_result
+        else:
+            payload = _poll_grsai_task(client, submit_result)
 
     image_url = _extract_grsai_image_url(payload)
     local_path = None

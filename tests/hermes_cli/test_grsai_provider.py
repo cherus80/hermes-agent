@@ -1,5 +1,7 @@
 from hermes_cli.auth import resolve_provider
 from hermes_cli.dual_provider import (
+    dual_provider_default_provider,
+    dual_provider_supports_model,
     build_dual_provider_fallbacks,
     dual_provider_prompt_enabled,
     normalize_dual_provider_choice,
@@ -38,8 +40,11 @@ def test_dual_provider_helpers(monkeypatch):
     monkeypatch.setenv("GRSAI_API_KEY", "grs-test-key")
 
     assert dual_provider_prompt_enabled() is True
+    assert dual_provider_default_provider() == "openrouter"
     assert normalize_dual_provider_choice("2") == "grsai"
     assert normalize_dual_provider_choice("openrouter") == "openrouter"
+    assert dual_provider_supports_model("grsai", "openai/gpt-5.4") is True
+    assert dual_provider_supports_model("grsai", "openrouter/owl-alpha") is False
 
     chain = build_dual_provider_fallbacks(
         primary_provider="openrouter",
@@ -48,3 +53,16 @@ def test_dual_provider_helpers(monkeypatch):
     )
 
     assert chain == [{"provider": "grsai", "model": "openai/gpt-5.4"}]
+
+
+def test_dual_provider_skips_incompatible_sister_fallback(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.setenv("GRSAI_API_KEY", "grs-test-key")
+
+    chain = build_dual_provider_fallbacks(
+        primary_provider="openrouter",
+        model="openrouter/owl-alpha",
+        configured_fallbacks=[{"provider": "openrouter", "model": "minimax/minimax-m2.7"}],
+    )
+
+    assert chain == [{"provider": "openrouter", "model": "minimax/minimax-m2.7"}]

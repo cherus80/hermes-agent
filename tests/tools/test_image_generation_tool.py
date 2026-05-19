@@ -152,6 +152,7 @@ def test_resolves_kie_model_aliases():
     assert image_generation_tool._resolve_kie_model("Flux 2")["provider"] == "market"
     assert image_generation_tool._resolve_kie_model("Imagen 4")["model"] == "google/imagen4"
     assert image_generation_tool._resolve_kie_model("Nano Banana 2")["model"] == "nano-banana-2"
+    assert image_generation_tool._resolve_kie_model("nano-banana-2")["model"] == "nano-banana-2"
     assert image_generation_tool._resolve_kie_model("flux2")["label"] == "Flux 2"
 
 
@@ -386,6 +387,43 @@ def test_submit_grsai_task_uses_gpt_image_payload(monkeypatch):
         "aspect_ratio": "9:16",
         "n": 1,
     }
+
+
+def test_submit_grsai_task_parses_sse_terminal_payload(monkeypatch):
+    _install_fake_tools_package()
+    _install_fake_fal_client()
+    monkeypatch.setenv("GRSAI_API_KEY", "grs-test-key")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    class _FakeResponse:
+        headers = {"content-type": "text/event-stream"}
+        text = "\n".join(
+            [
+                'data: {"status":"running","progress":5}',
+                'data: {"status":"succeeded","results":[{"url":"https://image.grsai.com/generated/test.png"}]}',
+            ]
+        )
+
+        def raise_for_status(self):
+            return None
+
+    class _FakeClient:
+        def post(self, url, headers=None, json=None):
+            return _FakeResponse()
+
+    result = image_generation_tool._submit_grsai_task(
+        _FakeClient(),
+        image_generation_tool._resolve_grsai_model("gpt-image-2"),
+        "prompt",
+        "square",
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["results"][0]["url"] == "https://image.grsai.com/generated/test.png"
 
 
 def test_generate_image_with_grsai_returns_local_path(monkeypatch, tmp_path):

@@ -12998,7 +12998,7 @@ class GatewayRunner:
         }
 
     # ------------------------------------------------------------------
-    def _runtime_override_for_provider(provider: str) -> dict[str, Any]:
+    def _runtime_override_for_provider(self, provider: str) -> dict[str, Any]:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=provider)
@@ -13023,9 +13023,8 @@ class GatewayRunner:
 
         try:
             from hermes_cli.dual_provider import (
+                dual_provider_default_provider,
                 dual_provider_prompt_enabled,
-                dual_provider_prompt_text,
-                normalize_dual_provider_choice,
             )
         except Exception:
             return message, None
@@ -13043,24 +13042,14 @@ class GatewayRunner:
         if history:
             return message, None
 
-        if session_entry.provider_selection_pending:
-            choice = normalize_dual_provider_choice(message)
-            if not choice:
-                return None, dual_provider_prompt_text(retry=True)
-
-            session_entry.selected_provider = choice
-            session_entry.provider_selection_pending = False
-            pending_message = session_entry.pending_provider_message or ""
-            session_entry.pending_provider_message = None
-            self._session_model_overrides[session_key] = self._runtime_override_for_provider(choice)
-            self._evict_cached_agent(session_key)
-            self.session_store._save()
-            return pending_message or message, None
-
-        session_entry.provider_selection_pending = True
-        session_entry.pending_provider_message = message
+        default_provider = dual_provider_default_provider()
+        session_entry.selected_provider = default_provider
+        session_entry.provider_selection_pending = False
+        session_entry.pending_provider_message = None
+        self._session_model_overrides[session_key] = self._runtime_override_for_provider(default_provider)
+        self._evict_cached_agent(session_key)
         self.session_store._save()
-        return None, dual_provider_prompt_text()
+        return message, None
 
     async def _run_agent(
         self,

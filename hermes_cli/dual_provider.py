@@ -6,6 +6,8 @@ import os
 from typing import Any, Optional
 
 from hermes_cli.auth import PROVIDER_REGISTRY, has_usable_secret
+from hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_cli.models import _PROVIDER_MODELS
 
 DUAL_PROVIDER_PRIMARY = "openrouter"
 DUAL_PROVIDER_SECONDARY = "grsai"
@@ -40,6 +42,11 @@ def dual_provider_prompt_enabled() -> bool:
     return all(dual_provider_is_configured(provider) for provider in DUAL_PROVIDER_IDS)
 
 
+def dual_provider_default_provider() -> str:
+    """Return the default provider for new dual-provider sessions."""
+    return DUAL_PROVIDER_PRIMARY
+
+
 def normalize_dual_provider_choice(raw: Optional[str]) -> Optional[str]:
     """Parse a user-facing provider choice into a canonical provider id."""
     normalized = (raw or "").strip().lower()
@@ -69,6 +76,28 @@ def dual_provider_cli_prompt(default_provider: str = DUAL_PROVIDER_PRIMARY) -> t
     ), default_value
 
 
+def dual_provider_supports_model(provider: str, model: Optional[str]) -> bool:
+    """Return whether the provider can plausibly serve the requested model."""
+    normalized_provider = (provider or "").strip().lower()
+    normalized_model = (model or "").strip()
+    if not normalized_provider or not normalized_model:
+        return False
+    if normalized_provider == "openrouter":
+        return True
+
+    try:
+        provider_model = normalize_model_for_provider(normalized_model, normalized_provider)
+    except Exception:
+        provider_model = normalized_model
+
+    supported = {
+        str(entry).strip().lower()
+        for entry in _PROVIDER_MODELS.get(normalized_provider, [])
+        if str(entry).strip()
+    }
+    return str(provider_model).strip().lower() in supported
+
+
 def _normalize_fallback_entries(configured: Any) -> list[dict[str, Any]]:
     if isinstance(configured, list):
         return [
@@ -96,6 +125,9 @@ def build_dual_provider_fallbacks(
 
     sister = DUAL_PROVIDER_SECONDARY if normalized_primary == DUAL_PROVIDER_PRIMARY else DUAL_PROVIDER_PRIMARY
     if not dual_provider_is_configured(sister):
+        return configured
+
+    if not dual_provider_supports_model(sister, normalized_model):
         return configured
 
     sister_entry = {"provider": sister, "model": normalized_model}
