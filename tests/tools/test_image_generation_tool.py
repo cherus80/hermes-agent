@@ -112,6 +112,49 @@ def test_handle_image_generate_requires_model_for_grsai(monkeypatch):
     assert "nano-banana-fast" in result["error"]
 
 
+def test_handle_image_generate_uses_builtin_grsai_when_provider_configured(monkeypatch):
+    _install_fake_tools_package()
+    _install_fake_fal_client()
+    monkeypatch.delenv("KIE_AI_API_KEY", raising=False)
+    monkeypatch.setenv("GRSAI_API_KEY", "grs-test-key")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_read_configured_image_provider",
+        lambda: "grsai",
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_read_configured_image_model",
+        lambda: "gpt-image-2",
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "image_generate_tool",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "provider": "grsai",
+            "model": kwargs.get("model"),
+            "image": "https://example.com/grsai.png",
+        }),
+    )
+
+    result = json.loads(
+        image_generation_tool._handle_image_generate(
+            {"prompt": "Нарисуй афишу для фестиваля", "aspect_ratio": "square"}
+        )
+    )
+
+    assert result["success"] is True
+    assert result["provider"] == "grsai"
+    assert result["model"] == "gpt-image-2"
+
+
 def test_extracts_first_result_url_from_kie_task_payload(monkeypatch):
     _install_fake_tools_package()
     _install_fake_fal_client()

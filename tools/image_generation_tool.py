@@ -1239,7 +1239,9 @@ def image_generate_tool(
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    provider = _get_image_provider(model)
+    model_id = model or ""
+    meta: Dict[str, Any] = {}
 
     debug_call_data = {
         "model": model or model_id,
@@ -1262,7 +1264,6 @@ def image_generate_tool(
     start_time = datetime.datetime.now()
 
     try:
-        provider = _get_image_provider(model)
         logger.info(
             "Generating %s image(s) with %s provider: %s",
             num_images, provider, prompt[:80],
@@ -1308,6 +1309,9 @@ def image_generate_tool(
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
             raise ValueError(message)
+
+        model_id, meta = _resolve_fal_model()
+        debug_call_data["model"] = model or model_id
 
         overrides: Dict[str, Any] = {}
         if num_inference_steps is not None:
@@ -1572,12 +1576,11 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     built-in FAL path.
 
     Dispatch only fires when ``image_gen.provider`` is explicitly set AND
-    it does not point to ``fal`` (FAL still lives in-tree in this PR;
-    a later PR ports it into ``plugins/image_gen/fal/``). Any other value
-    that matches a registered plugin provider wins.
+    it does not point to one of the built-in backends. Any other value that
+    matches a registered plugin provider wins.
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
+    if not configured or configured in {"fal", "kie", "grsai"}:
         return None
 
     # Also read configured model so we can pass it to the plugin
