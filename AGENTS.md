@@ -769,6 +769,66 @@ For this deployment specifically:
 - If a model/provider works in Hermes but not in the outer shell, the
   container runtime is the source of truth.
 
+### Image Generation Playbook: GrsAI and Kie.ai
+
+When the user asks Hermes to generate a cover, thumbnail, featured image,
+or any other image for this deployment, follow this procedure:
+
+1. **Use the built-in `image_generate` tool first.**
+   - Do **not** start by probing `grsai.com` with `curl`.
+   - Do **not** conclude that GrsAI has no usable API just because the
+     public website routes return HTML or `404`.
+   - The Hermes integration already knows the correct request/response
+     formats in `tools/image_generation_tool.py`.
+
+2. **Treat GrsAI as the default cover-image backend.**
+   - This deployment's local runtime config pins:
+     - `image_gen.provider: grsai`
+     - `image_gen.model: gpt-image-2`
+   - So a plain `image_generate` call with just `prompt` +
+     `aspect_ratio` should already route to GrsAI.
+
+3. **If the user asks for a specific image model, map it through the
+   built-in backend instead of inventing endpoints.**
+   - Valid GrsAI image models in this deployment:
+     - `gpt-image-2`
+     - `gpt-image-2-vip`
+     - `Imagen 4`
+     - `nano-banana-2`
+     - `nano-banana-fast`
+     - `nano-banana-pro`
+   - Valid Kie.ai image models in this deployment:
+     - `gpt-image-2-text-to-image`
+     - `Flux 2`
+     - `Imagen 4`
+     - `Nano Banana 2`
+
+4. **Only use Kie.ai as a deliberate fallback, not as a guess.**
+   - If GrsAI fails and the user still wants an image, try Kie.ai with a
+     compatible model via `image_generate`.
+   - Do not silently switch text-model providers and do not claim Kie is
+     broken until the built-in Kie path itself fails inside Hermes.
+
+5. **Use these failure interpretations.**
+   - Missing env vars in the outer shell: irrelevant.
+   - `provider_not_registered` for `grsai` / `kie`: likely a routing bug
+     or config mismatch in Hermes, not proof the backend is unavailable.
+   - `404` from the public `grsai.com` site: irrelevant to the built-in
+     Hermes integration.
+   - Long wait with no chunks: inspect the live Hermes runtime and
+     `tools/image_generation_tool.py` behavior before telling the user the
+     backend is unsupported.
+
+6. **Preferred agent wording when it works.**
+   - "I’m generating the cover through Hermes’ built-in GrsAI backend."
+   - Avoid wording like "GrsAI has no public API" unless you've verified
+     the built-in Hermes integration is broken inside the container.
+
+7. **If you must diagnose, diagnose inside Hermes.**
+   - First inspect runtime config / env from inside `hermes-local`.
+   - Then test the built-in Python path or `image_generate`.
+   - Only after that inspect network/API behavior directly.
+
 ---
 
 ## Important Policies
