@@ -20,11 +20,15 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional
 
+from agent.account_usage import fetch_account_usage
 from hermes_cli.providers import (
     custom_provider_slug,
     determine_api_mode,
@@ -88,6 +92,80 @@ def _check_hermes_model_warning(model_name: str) -> str:
     """Return a warning string if *model_name* is a Nous Hermes 3/4 chat model."""
     if is_nous_hermes_non_agentic(model_name):
         return _HERMES_MODEL_WARNING
+    return ""
+
+
+def _parse_iso_datetime(value: object) -> Optional[datetime]:
+    """Parse ISO timestamps from auth claims into timezone-aware datetimes."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _decode_jwt_payload(token: str) -> dict:
+    """Decode the payload section of a JWT without verifying the signature."""
+    parts = (token or "").split(".")
+    if len(parts) < 2 or not parts[1]:
+        return {}
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        data = json.loads(decoded.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _codex_preflight_error(api_key: str = "", base_url: str = "") -> str:
+    """Return a user-facing blocker when OpenAI Codex is known unavailable."""
+    try:
+        from hermes_cli.auth import _read_codex_tokens
+
+        token_data = _read_codex_tokens()
+        id_token = str((token_data.get("tokens") or {}).get("id_token") or "").strip()
+        claims = _decode_jwt_payload(id_token)
+        auth_claims = claims.get("https://api.openai.com/auth")
+        if isinstance(auth_claims, dict):
+            plan = str(auth_claims.get("chatgpt_plan_type") or "ChatGPT").strip()
+            active_until = _parse_iso_datetime(
+                auth_claims.get("chatgpt_subscription_active_until")
+            )
+            if active_until and datetime.now(timezone.utc) > active_until:
+                plan_label = plan.title() if plan else "ChatGPT"
+                until_text = active_until.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                return (
+                    f"OpenAI Codex is unavailable for this account: the {plan_label} "
+                    f"subscription ended on {until_text}. Renew it or use another provider."
+                )
+    except Exception:
+        pass
+
+    try:
+        usage = fetch_account_usage("openai-codex", base_url=base_url, api_key=api_key)
+    except Exception:
+        usage = None
+    if usage:
+        exhausted = [window for window in usage.windows if window.used_percent is not None and float(window.used_percent) >= 100.0]
+        if exhausted:
+            window = exhausted[0]
+            reset_text = ""
+            if window.reset_at is not None:
+                reset_text = " It resets at " + window.reset_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") + "."
+            return (
+                f"OpenAI Codex is currently exhausted for this account: "
+                f"the {window.label.lower()} limit is at 100% used.{reset_text}"
+            )
+
     return ""
 
 
@@ -905,6 +983,18 @@ def switch_model(
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
+
+    if target_provider == "openai-codex":
+        codex_blocker = _codex_preflight_error(api_key=api_key, base_url=base_url)
+        if codex_blocker:
+            return ModelSwitchResult(
+                success=False,
+                new_model=new_model,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=codex_blocker,
+            )
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
