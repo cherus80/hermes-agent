@@ -128,6 +128,25 @@ def _decode_jwt_payload(token: str) -> dict:
 
 def _codex_preflight_error(api_key: str = "", base_url: str = "") -> str:
     """Return a user-facing blocker when OpenAI Codex is known unavailable."""
+    usage = None
+    try:
+        usage = fetch_account_usage("openai-codex", base_url=base_url, api_key=api_key)
+    except Exception:
+        usage = None
+    if usage:
+        exhausted = [window for window in usage.windows if window.used_percent is not None and float(window.used_percent) >= 100.0]
+        if exhausted:
+            window = exhausted[0]
+            reset_text = ""
+            if window.reset_at is not None:
+                reset_text = " It resets at " + window.reset_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") + "."
+            return (
+                f"OpenAI Codex is currently exhausted for this account: "
+                f"the {window.label.lower()} limit is at 100% used.{reset_text}"
+            )
+        # The live usage endpoint is more trustworthy than stale JWT claims.
+        return ""
+
     try:
         from hermes_cli.auth import _read_codex_tokens
 
@@ -149,22 +168,6 @@ def _codex_preflight_error(api_key: str = "", base_url: str = "") -> str:
                 )
     except Exception:
         pass
-
-    try:
-        usage = fetch_account_usage("openai-codex", base_url=base_url, api_key=api_key)
-    except Exception:
-        usage = None
-    if usage:
-        exhausted = [window for window in usage.windows if window.used_percent is not None and float(window.used_percent) >= 100.0]
-        if exhausted:
-            window = exhausted[0]
-            reset_text = ""
-            if window.reset_at is not None:
-                reset_text = " It resets at " + window.reset_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") + "."
-            return (
-                f"OpenAI Codex is currently exhausted for this account: "
-                f"the {window.label.lower()} limit is at 100% used.{reset_text}"
-            )
 
     return ""
 
