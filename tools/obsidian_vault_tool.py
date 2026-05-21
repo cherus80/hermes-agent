@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -78,8 +81,19 @@ def _project_note_path(project_key: str) -> Path:
     return _safe_note_path(f"{projects_dir}/{safe_key}.md")
 
 
+def _artifacts_dir() -> Path:
+    cfg = _load_yaml_config().get("vault") or {}
+    artifacts_dir = str(cfg.get("artifacts_dir") or "Artifacts")
+    return _safe_note_path(artifacts_dir)
+
+
 def _relative_note_path(path: Path) -> str:
     return str(path.resolve().relative_to(_vault_root()))
+
+
+def _safe_artifact_name(name: str, fallback: str = "artifact") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "-", (name or "").strip()).strip(" .")
+    return cleaned or fallback
 
 
 def vault_search(query: str, limit: int = 10) -> str:
@@ -218,6 +232,75 @@ def vault_reindex(full: bool = False) -> str:
         return tool_error(str(exc))
 
 
+def vault_save_artifact(
+    filename: str,
+    source_path: str = "",
+    content: str = "",
+    content_base64: str = "",
+    folder: str = "",
+    note_path: str = "",
+    note_heading: str = "Artifacts",
+) -> str:
+    if not filename.strip():
+        return tool_error("filename is required")
+    if sum(bool(v.strip()) for v in [source_path, content, content_base64]) != 1:
+        return tool_error("provide exactly one of source_path, content, or content_base64")
+
+    try:
+        artifact_root = _artifacts_dir()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        target_dir = artifact_root
+        if folder.strip():
+            safe_folder = re.sub(r"[^A-Za-z0-9/_ .-]+", "-", folder.strip()).strip("/")
+            target_dir = _safe_note_path(f"{_relative_note_path(artifact_root)}/{safe_folder}")
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = _safe_artifact_name(filename, fallback="artifact")
+        target_path = (target_dir / safe_name).resolve()
+        try:
+            target_path.relative_to(_vault_root())
+        except ValueError as exc:
+            raise ValueError("artifact path escapes vault root") from exc
+
+        if source_path.strip():
+            src = Path(source_path).expanduser().resolve()
+            if not src.exists() or not src.is_file():
+                return tool_error(f"source file not found: {source_path}")
+            shutil.copy2(src, target_path)
+        elif content_base64.strip():
+            payload = base64.b64decode(content_base64.encode("ascii"))
+            target_path.write_bytes(payload)
+        else:
+            target_path.write_text(content, encoding="utf-8")
+
+        mime_type, _ = mimetypes.guess_type(target_path.name)
+        relative_artifact = _relative_note_path(target_path)
+        result: dict[str, Any] = {
+            "saved": True,
+            "path": relative_artifact,
+            "bytes": target_path.stat().st_size,
+            "mime_type": mime_type or "application/octet-stream",
+            "wikilink": f"![[{relative_artifact}]]",
+            "markdown_link": f"[{target_path.name}]({relative_artifact})",
+        }
+
+        if note_path.strip():
+            link_line = f"- {result['markdown_link']}"
+            if mime_type and mime_type.startswith("image/"):
+                link_line = f"- {result['wikilink']}"
+            note_update = vault_update_section(note_path, note_heading, link_line, mode="append")
+            if note_update.startswith("Error:"):
+                return note_update
+            result["note_updated"] = True
+            result["note_path"] = note_path
+            result["note_heading"] = note_heading
+
+        return _render_json(result)
+    except Exception as exc:
+        logger.warning("vault_save_artifact failed: %s", exc)
+        return tool_error(str(exc))
+
+
 VAULT_SEARCH_SCHEMA = {
     "name": "vault_search",
     "description": "Search the Obsidian Vault mirrored on disk. Returns matching notes with path, summary, tags, and aliases.",
@@ -318,6 +401,24 @@ VAULT_REINDEX_SCHEMA = {
     },
 }
 
+VAULT_SAVE_ARTIFACT_SCHEMA = {
+    "name": "vault_save_artifact",
+    "description": "Save a file artifact into the Obsidian Vault Artifacts directory. Can copy an existing local file, save plain text, or decode base64 content. Optionally appends a link into a note section.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string"},
+            "source_path": {"type": "string", "description": "Absolute or local path of an existing file to copy into the vault."},
+            "content": {"type": "string", "description": "Plain text content to save as a new file."},
+            "content_base64": {"type": "string", "description": "Base64-encoded file bytes to save."},
+            "folder": {"type": "string", "description": "Optional subfolder inside Artifacts, for example project-name or images."},
+            "note_path": {"type": "string", "description": "Optional vault note to update with a link to the saved artifact."},
+            "note_heading": {"type": "string", "default": "Artifacts"},
+        },
+        "required": ["filename"],
+    },
+}
+
 
 registry.register(name="vault_search", toolset="vault", schema=VAULT_SEARCH_SCHEMA, handler=lambda args, **kw: vault_search(args.get("query", ""), args.get("limit", 10)), check_fn=_vault_enabled, emoji="🧭")
 registry.register(name="vault_read_note", toolset="vault", schema=VAULT_READ_SCHEMA, handler=lambda args, **kw: vault_read_note(args.get("path", "")), check_fn=_vault_enabled, emoji="📓", max_result_size_chars=100_000)
@@ -327,3 +428,4 @@ registry.register(name="vault_update_section", toolset="vault", schema=VAULT_UPD
 registry.register(name="vault_daily_note", toolset="vault", schema=VAULT_DAILY_SCHEMA, handler=lambda args, **kw: vault_daily_note(args.get("date", ""), args.get("append_content", "")), check_fn=_vault_enabled, emoji="📅")
 registry.register(name="vault_project_note", toolset="vault", schema=VAULT_PROJECT_SCHEMA, handler=lambda args, **kw: vault_project_note(args.get("project_key", ""), args.get("append_content", "")), check_fn=_vault_enabled, emoji="📁")
 registry.register(name="vault_reindex", toolset="vault", schema=VAULT_REINDEX_SCHEMA, handler=lambda args, **kw: vault_reindex(bool(args.get("full", False))), check_fn=_vault_enabled, emoji="🗂️")
+registry.register(name="vault_save_artifact", toolset="vault", schema=VAULT_SAVE_ARTIFACT_SCHEMA, handler=lambda args, **kw: vault_save_artifact(args.get("filename", ""), args.get("source_path", ""), args.get("content", ""), args.get("content_base64", ""), args.get("folder", ""), args.get("note_path", ""), args.get("note_heading", "Artifacts")), check_fn=_vault_enabled, emoji="📎")
