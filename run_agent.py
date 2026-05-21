@@ -8106,6 +8106,42 @@ class AIAgent:
             logging.warning("Failed to restore primary runtime: %s", e)
             return False
 
+    def _activate_fallback_with_runtime_note(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        reason: "FailoverReason | None" = None,
+    ) -> bool:
+        """Activate fallback and inject a runtime-identity note for the retry."""
+        previous_model = self.model
+        previous_provider = self.provider
+        if not self._try_activate_fallback(reason=reason):
+            return False
+
+        note = {
+            "role": "user",
+            "content": (
+                "[System: Runtime fallback activated for this turn. "
+                f"The active model is now {self.model} via {self.provider} "
+                f"(previously {previous_model} via {previous_provider}). "
+                "If asked which model you are, answer with the active runtime "
+                "model/provider handling this turn, not the previously requested one.]"
+            ),
+            "_runtime_fallback_synthetic": True,
+        }
+        if not messages or messages[-1] != note:
+            messages.append(note)
+        return True
+
+    def _strip_runtime_fallback_notes(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop synthetic runtime-fallback notes before persisting history."""
+        if not messages:
+            return messages
+        return [
+            msg for msg in messages
+            if not (isinstance(msg, dict) and msg.get("_runtime_fallback_synthetic"))
+        ]
+
     # Which error types indicate a transient transport failure worth
     # one more attempt with a rebuilt client / connection pool.
     _TRANSIENT_TRANSPORT_ERRORS = frozenset({
@@ -11510,7 +11546,7 @@ class AIAgent:
                                 force=True,
                             )
                             self._emit_status(f"⏳ {_nous_msg}")
-                            if self._try_activate_fallback():
+                            if self._activate_fallback_with_runtime_note(messages):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -11732,7 +11768,7 @@ class AIAgent:
                         # rather than retrying with extended backoff.
                         if self._fallback_index < len(self._fallback_chain):
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if self._try_activate_fallback():
+                        if self._activate_fallback_with_runtime_note(messages):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -11802,7 +11838,7 @@ class AIAgent:
                         if retry_count >= max_retries:
                             # Try fallback before giving up
                             self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                            if self._try_activate_fallback():
+                            if self._activate_fallback_with_runtime_note(messages):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -12767,7 +12803,7 @@ class AIAgent:
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback(reason=classified.reason):
+                            if self._activate_fallback_with_runtime_note(messages, reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -13095,7 +13131,7 @@ class AIAgent:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                        if self._try_activate_fallback():
+                        if self._activate_fallback_with_runtime_note(messages):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -13162,7 +13198,7 @@ class AIAgent:
                             continue
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                        if self._try_activate_fallback():
+                        if self._activate_fallback_with_runtime_note(messages):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -14016,7 +14052,7 @@ class AIAgent:
                                 "⚠️ Model returning empty responses — "
                                 "switching to fallback provider..."
                             )
-                            if self._try_activate_fallback():
+                            if self._activate_fallback_with_runtime_note(messages):
                                 self._empty_content_retries = 0
                                 self._emit_status(
                                     f"↻ Switched to fallback: {self.model} "
@@ -14035,6 +14071,7 @@ class AIAgent:
                         _turn_exit_reason = "empty_response_exhausted"
                         reasoning_text = self._extract_reasoning(assistant_message)
                         self._drop_trailing_empty_response_scaffolding(messages)
+                        messages = self._strip_runtime_fallback_notes(messages)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
                         # This is a user-facing failure sentinel for the gateway,
@@ -14129,6 +14166,8 @@ class AIAgent:
                         )
                     ):
                         messages.pop()
+
+                    messages = self._strip_runtime_fallback_notes(messages)
 
                     messages.append(final_msg)
                     

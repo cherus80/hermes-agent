@@ -1066,6 +1066,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_runtime_state: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
@@ -1151,6 +1152,10 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Tracks the model/provider that most recently answered for a session.
+        # Unlike _session_model_overrides, this is observational runtime state
+        # and may temporarily differ when an internal fallback handles a turn.
+        self._session_runtime_state: Dict[str, Dict[str, str]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -6150,6 +6155,7 @@ class GatewayRunner:
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
+            self._session_runtime_state.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
@@ -6238,7 +6244,7 @@ class GatewayRunner:
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(source=source)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -6922,6 +6928,7 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._session_runtime_state.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -7105,7 +7112,75 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _get_session_resident_agent(self, session_key: Optional[str]):
+        """Return the running or cached agent instance for ``session_key``."""
+        if not session_key:
+            return None
+
+        agent = self._running_agents.get(session_key)
+        if agent and agent is not _AGENT_PENDING_SENTINEL:
+            return agent
+
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                cached = _cache.get(session_key)
+                if cached:
+                    return cached[0]
+        return None
+
+    def _resolve_effective_session_runtime(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve the model/runtime actually active for a session."""
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=resolved_session_key,
+            user_config=user_config,
+        )
+
+        resident = self._get_session_resident_agent(resolved_session_key)
+        if resident is None:
+            runtime_state = (
+                self._session_runtime_state.get(resolved_session_key)
+                if resolved_session_key
+                else None
+            )
+            if runtime_state:
+                runtime_kwargs = dict(runtime_kwargs)
+                model = runtime_state.get("model", model)
+                for key in ("provider", "api_key", "base_url", "api_mode"):
+                    value = runtime_state.get(key)
+                    if value is not None:
+                        runtime_kwargs[key] = value
+            return model, runtime_kwargs
+
+        runtime_kwargs = dict(runtime_kwargs)
+        resident_model = getattr(resident, "model", None) or model
+        for key in ("provider", "api_key", "base_url", "api_mode"):
+            value = getattr(resident, key, None)
+            if value is not None:
+                runtime_kwargs[key] = value
+        return resident_model, runtime_kwargs
+
+    def _format_session_info(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -7114,7 +7189,10 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        model, effective_runtime = self._resolve_effective_session_runtime(
+            source=source,
+            session_key=session_key,
+        )
         config_context_length = None
         provider = None
         base_url = None
@@ -7178,14 +7256,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
-        # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
-        except Exception:
-            pass
+        provider = effective_runtime.get("provider") or provider
+        base_url = effective_runtime.get("base_url") or base_url
+        api_key = effective_runtime.get("api_key") or api_key
 
         context_length = get_model_context_length(
             model,
@@ -7273,6 +7346,7 @@ class GatewayRunner:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        self._session_runtime_state.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -7307,7 +7381,7 @@ class GatewayRunner:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(source=source)
         except Exception:
             session_info = ""
 
@@ -7999,11 +8073,19 @@ class GatewayRunner:
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
                         _self._pending_model_notes[_session_key] = (
-                            f"[Note: model was just switched from {_cur_model} to {result.new_model} "
-                            f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
+                            f"[Note: the preferred session model was just switched from {_cur_model} "
+                            f"to {result.new_model} via {result.provider_label or result.target_provider}. "
+                            f"If an internal runtime fallback activates during this turn, identify "
+                            f"yourself using the active runtime model/provider instead of the preferred one.]"
                         )
                         _self._session_model_overrides[_session_key] = {
+                            "model": result.new_model,
+                            "provider": result.target_provider,
+                            "api_key": result.api_key,
+                            "base_url": result.base_url,
+                            "api_mode": result.api_mode,
+                        }
+                        _self._session_runtime_state[_session_key] = {
                             "model": result.new_model,
                             "provider": result.target_provider,
                             "api_key": result.api_key,
@@ -8137,13 +8219,21 @@ class GatewayRunner:
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
         self._pending_model_notes[session_key] = (
-            f"[Note: model was just switched from {current_model} to {result.new_model} "
-            f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+            f"[Note: the preferred session model was just switched from {current_model} "
+            f"to {result.new_model} via {result.provider_label or result.target_provider}. "
+            f"If an internal runtime fallback activates during this turn, identify "
+            f"yourself using the active runtime model/provider instead of the preferred one.]"
         )
 
         # Store session override so next agent creation uses the new model
         self._session_model_overrides[session_key] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+        self._session_runtime_state[session_key] = {
             "model": result.new_model,
             "provider": result.target_provider,
             "api_key": result.api_key,
@@ -14681,7 +14771,32 @@ class GatewayRunner:
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+                _actual_runtime = {
+                    "model": getattr(_agent, "model", None),
+                    "provider": getattr(_agent, "provider", None),
+                    "api_key": getattr(_agent, "api_key", None),
+                    "base_url": getattr(_agent, "base_url", None),
+                    "api_mode": getattr(_agent, "api_mode", None),
+                }
+                _override = self._session_model_overrides.get(session_key) or {}
+                _override_model = _override.get("model")
+                _override_provider = _override.get("provider")
+                _actual_model = _actual_runtime.get("model")
+                _actual_provider = _actual_runtime.get("provider")
+                _fallback_active = bool(getattr(_agent, "_fallback_activated", False))
+                _was_intentional_model = bool(_override_model and _actual_model == _override_model)
+                if _actual_model and (
+                    _fallback_active
+                    or _actual_model != _override_model
+                    or (_actual_provider and _actual_provider != _override_provider)
+                ):
+                    self._session_runtime_state[session_key] = _actual_runtime
+                    if hasattr(self, "_pending_model_notes"):
+                        self._pending_model_notes.pop(session_key, None)
+                elif _actual_model:
+                    self._session_runtime_state[session_key] = _actual_runtime
+
+                if _agent.model != _cfg_model and not _was_intentional_model:
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)
