@@ -298,7 +298,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
-        # Interactive model picker state per chat
+        # Interactive model picker state per picker message
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
@@ -1673,8 +1673,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            # Store picker state keyed by chat_id
-            self._model_picker_state[str(chat_id)] = {
+            state_key = self._model_picker_state_key(str(chat_id), int(msg.message_id))
+            self._model_picker_state[state_key] = {
                 "msg_id": msg.message_id,
                 "providers": providers,
                 "session_key": session_key,
@@ -1732,10 +1732,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return InlineKeyboardMarkup(rows), page_info
 
     async def _handle_model_picker_callback(
-        self, query, data: str, chat_id: str
+        self, query, data: str, chat_id: str, message_id: int
     ) -> None:
         """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
-        state = self._model_picker_state.get(chat_id)
+        state_key = self._model_picker_state_key(chat_id, message_id)
+        state = self._model_picker_state.get(state_key)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
             return
@@ -1862,7 +1863,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Model switched!")
 
             # Clean up state
-            self._model_picker_state.pop(chat_id, None)
+            self._model_picker_state.pop(state_key, None)
 
         elif data == "mb":
             # --- Back to provider list ---
@@ -1899,7 +1900,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif data == "mx":
             # --- Cancel ---
-            self._model_picker_state.pop(chat_id, None)
+            self._model_picker_state.pop(state_key, None)
             await query.edit_message_text(
                 text="Model selection cancelled.",
                 reply_markup=None,
@@ -1928,8 +1929,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
-            if chat_id:
-                await self._handle_model_picker_callback(query, data, chat_id)
+            message_id = getattr(query.message, "message_id", None) if query.message else None
+            if chat_id and message_id is not None:
+                await self._handle_model_picker_callback(query, data, chat_id, int(message_id))
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -2914,6 +2916,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     if command_text[at_index:].strip().lower() == expected:
                         return True
         return False
+
+    def _model_picker_state_key(self, chat_id: str, message_id: int) -> str:
+        """Return a stable picker state key scoped to one Telegram message."""
+        return f"{chat_id}:{message_id}"
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
