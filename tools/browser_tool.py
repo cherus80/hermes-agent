@@ -591,8 +591,17 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
 
     if command == "snapshot":
         snap = data.get("snapshot", "")
-        # Empty or near-empty snapshots indicate Lightpanda couldn't render
-        if not snap or len(snap.strip()) < 20:
+        refs = data.get("refs", {}) if isinstance(data, dict) else {}
+        meaningful_lines = [
+            line.strip()
+            for line in str(snap).splitlines()
+            if line.strip() and line.strip() != "- none"
+        ]
+        # Empty snapshots still indicate Lightpanda couldn't render, but
+        # compact snapshots on simple pages can be legitimately short.
+        if not snap or not meaningful_lines:
+            return "Lightpanda returned an empty/too-short snapshot; retried with Chrome."
+        if len(str(snap).strip()) < 20 and not refs and len(meaningful_lines) < 2:
             return "Lightpanda returned an empty/too-short snapshot; retried with Chrome."
 
     if command == "screenshot":
@@ -2794,6 +2803,57 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
 
+    def _snapshot_only_vision_response(error_detail: str) -> Optional[str]:
+        """Fallback when Lightpanda cannot provide a real screenshot."""
+        try:
+            snapshot_json = browser_snapshot(full=True, task_id=effective_task_id, user_task=question)
+            snapshot_payload = json.loads(snapshot_json)
+            if not snapshot_payload.get("success"):
+                return None
+            snapshot_text = (snapshot_payload.get("snapshot") or "").strip()
+            if not snapshot_text:
+                return None
+
+            vision_prompt = (
+                "You are analyzing a web page from its browser accessibility snapshot "
+                "instead of a screenshot.\n\n"
+                f"User's question: {question}\n\n"
+                "Snapshot:\n"
+                f"{snapshot_text}\n\n"
+                "Answer the user's question as helpfully as possible from the page structure "
+                "and visible text. If something depends on visual styling, layout, or an image "
+                "that is not represented in the snapshot, say that clearly."
+            )
+
+            call_kwargs = {
+                "task": "web_extract",
+                "messages": [{"role": "user", "content": vision_prompt}],
+                "max_tokens": 2000,
+                "temperature": 0.1,
+                "timeout": 120.0,
+            }
+            model = _get_extraction_model()
+            if model:
+                call_kwargs["model"] = model
+            response = call_llm(**call_kwargs)
+            from agent.redact import redact_sensitive_text
+            analysis = redact_sensitive_text((response.choices[0].message.content or "").strip())
+            result = {
+                "success": True,
+                "analysis": analysis or "Snapshot-based analysis returned no content.",
+                "mode": "snapshot_fallback",
+                "note": (
+                    "Used page snapshot instead of a real screenshot because the lightweight "
+                    "browser on this VPS cannot render graphical captures."
+                ),
+            }
+            if error_detail:
+                result["capture_warning"] = error_detail
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as fallback_err:
+            logger.warning("snapshot-only browser_vision fallback failed: %s", fallback_err)
+            return None
+
     # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
     # via the fallback helper instead of letting the normal path fail with a
     # CDP error or return a placeholder PNG.  The normal analysis path below
@@ -2875,6 +2935,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
+            if engine == "lightpanda":
+                snapshot_fallback = _snapshot_only_vision_response(error_detail)
+                if snapshot_fallback is not None:
+                    return snapshot_fallback
             _cp = _get_cloud_provider()
             mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
             error_response = {
