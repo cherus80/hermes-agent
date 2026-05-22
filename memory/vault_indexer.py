@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +22,11 @@ _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
 _TAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_/-]+)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
+_DB_TIMEOUT_SECONDS = 5.0
+_DB_BUSY_TIMEOUT_MS = 5_000
+_WRITE_MAX_RETRIES = 8
+_WRITE_RETRY_MIN_S = 0.05
+_WRITE_RETRY_MAX_S = 0.25
 
 
 @dataclass
@@ -49,14 +56,55 @@ def load_vault_config() -> VaultConfig:
     return VaultConfig(bool(vault_cfg.get("enabled", False)), vault_path, db_path)
 
 
+def _connect_db(
+    db_path: Path,
+    *,
+    row_factory: sqlite3.Row | None = None,
+    isolation_level: str | None = None,
+) -> sqlite3.Connection:
+    conn = sqlite3.connect(
+        str(db_path),
+        timeout=_DB_TIMEOUT_SECONDS,
+        isolation_level=isolation_level,
+    )
+    if row_factory is not None:
+        conn.row_factory = row_factory
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(f"PRAGMA busy_timeout={_DB_BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def _execute_write(conn: sqlite3.Connection, fn: Any) -> Any:
+    last_err: sqlite3.OperationalError | None = None
+    for attempt in range(_WRITE_MAX_RETRIES):
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = fn(conn)
+                conn.commit()
+                return result
+            except BaseException:
+                conn.rollback()
+                raise
+        except sqlite3.OperationalError as exc:
+            err_msg = str(exc).lower()
+            if "locked" in err_msg or "busy" in err_msg:
+                last_err = exc
+                if attempt < _WRITE_MAX_RETRIES - 1:
+                    time.sleep(random.uniform(_WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S))
+                    continue
+            raise
+    raise last_err or sqlite3.OperationalError("database is locked after max retries")
+
+
 def ensure_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path = Path(__file__).with_name("schema.sql")
-    conn = sqlite3.connect(db_path)
+    conn = _connect_db(db_path, isolation_level=None)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(schema_path.read_text(encoding="utf-8"))
-        conn.commit()
+        schema_sql = schema_path.read_text(encoding="utf-8")
+        _execute_write(conn, lambda active_conn: active_conn.executescript(schema_sql))
     finally:
         conn.close()
 
@@ -139,7 +187,11 @@ def _title_from_path(frontmatter: dict[str, Any], note_path: Path) -> str:
     return title or note_path.stem
 
 
-def index_note(note_path: Path, cfg: VaultConfig | None = None) -> dict[str, Any]:
+def index_note(
+    note_path: Path,
+    cfg: VaultConfig | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
     cfg = cfg or load_vault_config()
     ensure_schema(cfg.db_path)
     if not note_path.exists():
@@ -162,79 +214,83 @@ def index_note(note_path: Path, cfg: VaultConfig | None = None) -> dict[str, Any
     digest = _note_hash(text)
     links = sorted(dict.fromkeys(match.group(1).strip() for match in _WIKILINK_RE.finditer(text)))
 
-    conn = sqlite3.connect(cfg.db_path)
+    owns_connection = conn is None
+    conn = conn or _connect_db(cfg.db_path, isolation_level=None)
     try:
-        conn.execute("DELETE FROM vault_notes_fts WHERE path = ?", (rel_path,))
-        conn.execute("DELETE FROM vault_sections WHERE note_path = ?", (rel_path,))
-        conn.execute("DELETE FROM vault_sections_fts WHERE note_path = ?", (rel_path,))
-        conn.execute(
-            """
-            INSERT INTO vault_notes(path, title, aliases_json, tags_json, headings_json, summary, hash, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-              title=excluded.title,
-              aliases_json=excluded.aliases_json,
-              tags_json=excluded.tags_json,
-              headings_json=excluded.headings_json,
-              summary=excluded.summary,
-              hash=excluded.hash,
-              updated_at=excluded.updated_at
-            """,
-            (
-                rel_path,
-                title,
-                json.dumps(aliases, ensure_ascii=False),
-                json.dumps(tags, ensure_ascii=False),
-                json.dumps(headings, ensure_ascii=False),
-                summary,
-                digest,
-                updated_at,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO vault_notes_fts(path, title, summary, tags, aliases) VALUES(?, ?, ?, ?, ?)",
-            (rel_path, title, summary, " ".join(tags), " ".join(aliases)),
-        )
-        for section in sections:
-            section_id = f"{rel_path}#{section['id_suffix']}"
-            conn.execute(
+        def _write(active_conn: sqlite3.Connection) -> None:
+            active_conn.execute("DELETE FROM vault_notes_fts WHERE path = ?", (rel_path,))
+            active_conn.execute("DELETE FROM vault_sections WHERE note_path = ?", (rel_path,))
+            active_conn.execute("DELETE FROM vault_sections_fts WHERE note_path = ?", (rel_path,))
+            active_conn.execute(
                 """
-                INSERT INTO vault_sections(id, note_path, heading, level, content, summary, position, updated_at)
+                INSERT INTO vault_notes(path, title, aliases_json, tags_json, headings_json, summary, hash, updated_at)
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                  title=excluded.title,
+                  aliases_json=excluded.aliases_json,
+                  tags_json=excluded.tags_json,
+                  headings_json=excluded.headings_json,
+                  summary=excluded.summary,
+                  hash=excluded.hash,
+                  updated_at=excluded.updated_at
                 """,
                 (
-                    section_id,
                     rel_path,
-                    section["heading"],
-                    section["level"],
-                    section["content"],
-                    section["summary"],
-                    section["position"],
+                    title,
+                    json.dumps(aliases, ensure_ascii=False),
+                    json.dumps(tags, ensure_ascii=False),
+                    json.dumps(headings, ensure_ascii=False),
+                    summary,
+                    digest,
                     updated_at,
                 ),
             )
-            conn.execute(
-                "INSERT INTO vault_sections_fts(section_id, note_path, heading, summary, content) VALUES(?, ?, ?, ?, ?)",
-                (
-                    section_id,
-                    rel_path,
-                    section["heading"],
-                    section["summary"],
-                    section["content"],
-                ),
+            active_conn.execute(
+                "INSERT INTO vault_notes_fts(path, title, summary, tags, aliases) VALUES(?, ?, ?, ?, ?)",
+                (rel_path, title, summary, " ".join(tags), " ".join(aliases)),
             )
-        for target in links:
-            link_id = f"{rel_path}->{target}"
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_links(id, from_id, to_id, link_type, weight, created_at)
-                VALUES(?, ?, ?, 'wikilink', 0.8, ?)
-                """,
-                (link_id, rel_path, target, updated_at),
-            )
-        conn.commit()
+            for section in sections:
+                section_id = f"{rel_path}#{section['id_suffix']}"
+                active_conn.execute(
+                    """
+                    INSERT INTO vault_sections(id, note_path, heading, level, content, summary, position, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        section_id,
+                        rel_path,
+                        section["heading"],
+                        section["level"],
+                        section["content"],
+                        section["summary"],
+                        section["position"],
+                        updated_at,
+                    ),
+                )
+                active_conn.execute(
+                    "INSERT INTO vault_sections_fts(section_id, note_path, heading, summary, content) VALUES(?, ?, ?, ?, ?)",
+                    (
+                        section_id,
+                        rel_path,
+                        section["heading"],
+                        section["summary"],
+                        section["content"],
+                    ),
+                )
+            for target in links:
+                link_id = f"{rel_path}->{target}"
+                active_conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_links(id, from_id, to_id, link_type, weight, created_at)
+                    VALUES(?, ?, ?, 'wikilink', 0.8, ?)
+                    """,
+                    (link_id, rel_path, target, updated_at),
+                )
+
+        _execute_write(conn, _write)
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
     return {
         "indexed": True,
         "path": rel_path,
@@ -254,7 +310,7 @@ def index_vault(full: bool = False, cfg: VaultConfig | None = None) -> dict[str,
     ensure_schema(cfg.db_path)
     count = 0
     changed = 0
-    conn = sqlite3.connect(cfg.db_path)
+    conn = _connect_db(cfg.db_path)
     try:
         existing = {
             row[0]: row[1]
@@ -262,15 +318,19 @@ def index_vault(full: bool = False, cfg: VaultConfig | None = None) -> dict[str,
         }
     finally:
         conn.close()
-    for note_path in sorted(cfg.path.rglob("*.md")):
-        if ".obsidian" in note_path.parts:
-            continue
-        count += 1
-        rel = str(note_path.relative_to(cfg.path))
-        digest = _note_hash(note_path.read_text(encoding="utf-8", errors="replace"))
-        if full or existing.get(rel) != digest:
-            index_note(note_path, cfg)
-            changed += 1
+    write_conn = _connect_db(cfg.db_path, isolation_level=None)
+    try:
+        for note_path in sorted(cfg.path.rglob("*.md")):
+            if ".obsidian" in note_path.parts:
+                continue
+            count += 1
+            rel = str(note_path.relative_to(cfg.path))
+            digest = _note_hash(note_path.read_text(encoding="utf-8", errors="replace"))
+            if full or existing.get(rel) != digest:
+                index_note(note_path, cfg, conn=write_conn)
+                changed += 1
+    finally:
+        write_conn.close()
     return {"indexed": True, "notes_scanned": count, "notes_updated": changed, "db_path": str(cfg.db_path)}
 
 
@@ -280,8 +340,7 @@ def search_notes(query: str, *, limit: int = 10, cfg: VaultConfig | None = None)
     query = (query or "").strip()
     if not query:
         return []
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db(cfg.db_path, row_factory=sqlite3.Row)
     try:
         rows = conn.execute(
             """
