@@ -66,6 +66,40 @@ def _make_runner():
     return runner
 
 
+def test_dual_provider_gate_ignores_stale_selection_for_non_dual_default(monkeypatch):
+    """Non-dual defaults like openai-codex must not inherit stale OpenRouter session pinning."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.selected_provider = "openrouter"
+    session_entry.provider_selection_pending = True
+    session_entry.pending_provider_message = "stale"
+    runner._session_model_overrides[session_key] = {
+        "provider": "openrouter",
+        "model": "owl-alpha",
+    }
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "openai-codex", "default": "gpt-5.4-mini"}},
+    )
+
+    message, gate_response = runner._gate_dual_provider_session_start(
+        source=_make_source(),
+        session_key=session_key,
+        history=[],
+        message="hello",
+    )
+
+    assert message == "hello"
+    assert gate_response is None
+    assert session_entry.selected_provider is None
+    assert session_entry.provider_selection_pending is False
+    assert session_entry.pending_provider_message is None
+    assert session_key not in runner._session_model_overrides
+    runner.session_store._save.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_new_command_clears_session_model_override():
     """/new must remove the session-scoped model override for that session."""

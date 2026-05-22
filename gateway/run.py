@@ -13113,16 +13113,33 @@ class GatewayRunner:
 
         try:
             from hermes_cli.dual_provider import (
+                DUAL_PROVIDER_IDS,
                 dual_provider_default_provider,
                 dual_provider_prompt_enabled,
             )
+            from hermes_cli.config import load_config
         except Exception:
+            return message, None
+
+        model_cfg = load_config().get("model") or {}
+        if isinstance(model_cfg, dict):
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        else:
+            configured_provider = ""
+
+        session_entry = self.session_store.get_or_create_session(source)
+        if configured_provider not in DUAL_PROVIDER_IDS:
+            if session_entry.selected_provider in DUAL_PROVIDER_IDS:
+                session_entry.selected_provider = None
+                session_entry.provider_selection_pending = False
+                session_entry.pending_provider_message = None
+                self.session_store._save()
+            self._session_model_overrides.pop(session_key, None)
             return message, None
 
         if not dual_provider_prompt_enabled():
             return message, None
 
-        session_entry = self.session_store.get_or_create_session(source)
         if session_entry.selected_provider:
             self._session_model_overrides[session_key] = self._runtime_override_for_provider(
                 session_entry.selected_provider,
