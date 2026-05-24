@@ -13149,7 +13149,7 @@ class GatewayRunner:
         if history:
             return message, None
 
-        default_provider = dual_provider_default_provider()
+        default_provider = dual_provider_default_provider(configured_provider)
         session_entry.selected_provider = default_provider
         session_entry.provider_selection_pending = False
         session_entry.pending_provider_message = None

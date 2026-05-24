@@ -3463,7 +3463,7 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     )
 
     with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "hermes_cli.model_switch.list_picker_providers",
         return_value=curated_providers,
     ) as listing:
         # If provider_model_ids gets called at all, the handler is still
@@ -3483,12 +3483,12 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     assert nous["total_models"] == 30
     # Handler must not consult the live catalog — curated is the truth.
     live_fetch.assert_not_called()
-    # list_authenticated_providers is the single source.
+    # list_picker_providers is the single source for interactive model UIs.
     assert listing.call_count == 1
 
 
 def test_model_options_propagates_list_exception(monkeypatch):
-    """If list_authenticated_providers itself raises, surface as an RPC
+    """If list_picker_providers itself raises, surface as an RPC
     error rather than swallowing to a blank picker."""
     monkeypatch.setattr(
         server,
@@ -3496,7 +3496,7 @@ def test_model_options_propagates_list_exception(monkeypatch):
         lambda: {"providers": {}, "custom_providers": []},
     )
     with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "hermes_cli.model_switch.list_picker_providers",
         side_effect=RuntimeError("catalog blew up"),
     ):
         resp = server._methods["model.options"](77, {"session_id": ""})

@@ -5128,7 +5128,8 @@ def _(rid, params: dict) -> dict:
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_cli.model_switch import list_picker_providers
         from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
         session = _sessions.get(params.get("session_id", ""))
@@ -5146,12 +5147,8 @@ def _(rid, params: dict) -> dict:
         user_provs = (
             cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
         )
-        custom_provs = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-        authenticated = list_authenticated_providers(
+        custom_provs = get_compatible_custom_providers(cfg)
+        authenticated = list_picker_providers(
             current_provider=current_provider,
             current_base_url=current_base_url,
             current_model=current_model,

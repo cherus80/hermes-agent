@@ -42,8 +42,21 @@ def dual_provider_prompt_enabled() -> bool:
     return all(dual_provider_is_configured(provider) for provider in DUAL_PROVIDER_IDS)
 
 
-def dual_provider_default_provider() -> str:
-    """Return the default provider for new dual-provider sessions."""
+def dual_provider_default_provider(preferred_provider: Optional[str] = None) -> str:
+    """Return the default provider for new dual-provider sessions.
+
+    ``preferred_provider`` lets callers honor the provider already selected in
+    ``config.yaml``. This prevents a fresh Telegram/Discord session from
+    silently snapping back to OpenRouter when the global Hermes default is
+    already set to GrsAI.
+    """
+    preferred = (preferred_provider or "").strip().lower()
+    if preferred in DUAL_PROVIDER_IDS and dual_provider_is_configured(preferred):
+        return preferred
+    if dual_provider_is_configured(DUAL_PROVIDER_PRIMARY):
+        return DUAL_PROVIDER_PRIMARY
+    if dual_provider_is_configured(DUAL_PROVIDER_SECONDARY):
+        return DUAL_PROVIDER_SECONDARY
     return DUAL_PROVIDER_PRIMARY
 
 

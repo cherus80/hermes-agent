@@ -980,7 +980,8 @@ def get_model_options():
     can share the same types.
     """
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_cli.model_switch import list_picker_providers
 
         cfg = load_config()
         model_cfg = cfg.get("model", {})
@@ -994,13 +995,9 @@ def get_model_options():
             current_base_url = ""
 
         user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        custom_providers = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
+        custom_providers = get_compatible_custom_providers(cfg)
 
-        providers = list_authenticated_providers(
+        providers = list_picker_providers(
             current_provider=current_provider,
             current_base_url=current_base_url,
             current_model=current_model,

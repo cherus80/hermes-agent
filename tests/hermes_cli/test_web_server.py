@@ -125,6 +125,49 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_model_options_uses_picker_provider_listing(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {"provider": "grsai", "default": "gemini-2.5-flash"},
+                "providers": {},
+                "custom_providers": [],
+            },
+        )
+
+        captured = {}
+
+        def _fake_picker(**kwargs):
+            captured.update(kwargs)
+            return [
+                {
+                    "slug": "grsai",
+                    "name": "GrsAI",
+                    "models": ["gemini-2.5-flash", "gpt-5.4"],
+                    "total_models": 2,
+                    "is_current": True,
+                    "is_user_defined": False,
+                }
+            ]
+
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.list_picker_providers",
+            _fake_picker,
+        )
+
+        resp = self.client.get("/api/model/options")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "grsai"
+        assert data["model"] == "gemini-2.5-flash"
+        assert data["providers"][0]["slug"] == "grsai"
+        assert captured["current_provider"] == "grsai"
+        assert captured["current_model"] == "gemini-2.5-flash"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

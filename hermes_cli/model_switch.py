@@ -1819,6 +1819,9 @@ def list_picker_providers(
       curated ``OPENROUTER_MODELS`` snapshot against the live OpenRouter
       catalog.  IDs the live catalog no longer carries drop out, so the
       picker never offers a model the user can't call.
+    - GrsAI's model list is refreshed from its live ``/models`` endpoint so
+      Telegram and dashboard pickers reflect the models the direct GrsAI API
+      currently serves instead of a stale curated snapshot.
     - Provider rows whose model list ends up empty are dropped, except
       custom endpoints (``is_user_defined=True`` with an ``api_url``) where
       the user may supply their own model set through config.
@@ -1827,7 +1830,7 @@ def list_picker_providers(
     The typed ``/model <name>`` path is unaffected -- only the interactive
     picker payload is narrowed.
     """
-    from hermes_cli.models import fetch_openrouter_models
+    from hermes_cli.models import fetch_openrouter_models, provider_model_ids
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
@@ -1850,6 +1853,15 @@ def list_picker_providers(
             p = dict(p)
             p["models"] = live_ids[:max_models]
             p["total_models"] = len(live_ids)
+        elif slug == "grsai":
+            try:
+                live_ids = provider_model_ids("grsai")
+            except Exception:
+                live_ids = list(p.get("models", []))
+            if live_ids:
+                p = dict(p)
+                p["models"] = live_ids[:max_models]
+                p["total_models"] = len(live_ids)
 
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

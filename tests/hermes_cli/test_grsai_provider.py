@@ -41,6 +41,8 @@ def test_dual_provider_helpers(monkeypatch):
 
     assert dual_provider_prompt_enabled() is True
     assert dual_provider_default_provider() == "openrouter"
+    assert dual_provider_default_provider("grsai") == "grsai"
+    assert dual_provider_default_provider("openrouter") == "openrouter"
     assert normalize_dual_provider_choice("2") == "grsai"
     assert normalize_dual_provider_choice("openrouter") == "openrouter"
     assert dual_provider_supports_model("grsai", "openai/gpt-5.4") is True
