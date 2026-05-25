@@ -168,6 +168,54 @@ class TestWebServerEndpoints:
         assert captured["current_provider"] == "grsai"
         assert captured["current_model"] == "gemini-2.5-flash"
 
+    def test_get_auxiliary_models_includes_live_session_override(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {"provider": "grsai", "default": "gemini-2.5-flash"},
+                "auxiliary": {},
+            },
+        )
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "telegram:chat-1": {
+                        "session_key": "telegram:chat-1",
+                        "session_id": "sid-1",
+                        "created_at": "2026-05-25T06:00:00",
+                        "updated_at": "2026-05-25T06:10:00",
+                        "preferred_provider": "openai-codex",
+                        "preferred_model": "gpt-5.4",
+                        "preferred_base_url": "",
+                    },
+                    "telegram:chat-2": {
+                        "session_key": "telegram:chat-2",
+                        "session_id": "sid-2",
+                        "created_at": "2026-05-25T06:00:00",
+                        "updated_at": "2026-05-25T06:05:00",
+                        "preferred_provider": "grsai",
+                        "preferred_model": "gemini-2.5-flash",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        resp = self.client.get("/api/model/auxiliary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["main"] == {"provider": "grsai", "model": "gemini-2.5-flash"}
+        assert data["live_main"]["provider"] == "openai-codex"
+        assert data["live_main"]["model"] == "gpt-5.4"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

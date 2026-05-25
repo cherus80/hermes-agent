@@ -479,6 +479,13 @@ class SessionEntry:
     provider_selection_pending: bool = False
     pending_provider_message: Optional[str] = None
 
+    # Persisted /model choice for the active session. This survives gateway
+    # restarts so chat-side model switches remain effective and observable.
+    preferred_model: Optional[str] = None
+    preferred_provider: Optional[str] = None
+    preferred_base_url: Optional[str] = None
+    preferred_api_mode: Optional[str] = None
+
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
@@ -517,6 +524,10 @@ class SessionEntry:
             "selected_provider": self.selected_provider,
             "provider_selection_pending": self.provider_selection_pending,
             "pending_provider_message": self.pending_provider_message,
+            "preferred_model": self.preferred_model,
+            "preferred_provider": self.preferred_provider,
+            "preferred_base_url": self.preferred_base_url,
+            "preferred_api_mode": self.preferred_api_mode,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
@@ -573,6 +584,10 @@ class SessionEntry:
             selected_provider=data.get("selected_provider"),
             provider_selection_pending=data.get("provider_selection_pending", False),
             pending_provider_message=data.get("pending_provider_message"),
+            preferred_model=data.get("preferred_model"),
+            preferred_provider=data.get("preferred_provider"),
+            preferred_base_url=data.get("preferred_base_url"),
+            preferred_api_mode=data.get("preferred_api_mode"),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
@@ -974,6 +989,53 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def set_preferred_model(
+        self,
+        session_key: str,
+        *,
+        model: Optional[str],
+        provider: Optional[str],
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+    ) -> bool:
+        """Persist the active session's /model selection."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.preferred_model = (model or "").strip() or None
+            entry.preferred_provider = (provider or "").strip() or None
+            entry.preferred_base_url = (base_url or "").strip() or None
+            entry.preferred_api_mode = (api_mode or "").strip() or None
+            entry.updated_at = _now()
+            self._save()
+            return True
+
+    def clear_preferred_model(self, session_key: str) -> bool:
+        """Clear any persisted /model selection for a session boundary."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if not any(
+                (
+                    entry.preferred_model,
+                    entry.preferred_provider,
+                    entry.preferred_base_url,
+                    entry.preferred_api_mode,
+                )
+            ):
+                return False
+            entry.preferred_model = None
+            entry.preferred_provider = None
+            entry.preferred_base_url = None
+            entry.preferred_api_mode = None
+            entry.updated_at = _now()
+            self._save()
+            return True
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

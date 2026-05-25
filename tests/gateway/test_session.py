@@ -1083,6 +1083,63 @@ class TestHasAnySessions:
         assert store.has_any_sessions() is False
 
 
+class TestPreferredSessionModel:
+    """Tests for persisted session-scoped /model overrides."""
+
+    def test_session_entry_roundtrip(self):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry(
+            session_key="telegram:1",
+            session_id="sid-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            preferred_provider="openai-codex",
+            preferred_model="gpt-5.4",
+            preferred_base_url="https://example.test/v1",
+            preferred_api_mode="responses",
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+
+        assert restored.preferred_provider == "openai-codex"
+        assert restored.preferred_model == "gpt-5.4"
+        assert restored.preferred_base_url == "https://example.test/v1"
+        assert restored.preferred_api_mode == "responses"
+
+    def test_store_set_and_clear_preferred_model(self, tmp_path):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._entries = {
+            "telegram:1": SessionEntry(
+                session_key="telegram:1",
+                session_id="sid-1",
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+        }
+
+        assert store.set_preferred_model(
+            "telegram:1",
+            model="gpt-5.4",
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+            api_mode="responses",
+        ) is True
+        assert store._entries["telegram:1"].preferred_model == "gpt-5.4"
+        assert store._entries["telegram:1"].preferred_provider == "openai-codex"
+
+        assert store.clear_preferred_model("telegram:1") is True
+        assert store._entries["telegram:1"].preferred_model is None
+        assert store._entries["telegram:1"].preferred_provider is None
+
+
 class TestLastPromptTokens:
     """Tests for the last_prompt_tokens field — actual API token tracking."""
 

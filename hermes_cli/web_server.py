@@ -970,6 +970,40 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+def _read_live_main_model() -> Optional[Dict[str, str]]:
+    """Read the latest persisted session-scoped /model override, if any."""
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    if not sessions_file.exists():
+        return None
+    try:
+        with open(sessions_file, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    latest: Optional[Dict[str, str]] = None
+    latest_updated_at = ""
+    for raw_entry in data.values():
+        if not isinstance(raw_entry, dict):
+            continue
+        provider = str(raw_entry.get("preferred_provider", "") or "").strip()
+        model = str(raw_entry.get("preferred_model", "") or "").strip()
+        if not provider or not model:
+            continue
+        updated_at = str(raw_entry.get("updated_at", "") or "")
+        if latest is None or updated_at >= latest_updated_at:
+            latest = {
+                "provider": provider,
+                "model": model,
+                "base_url": str(raw_entry.get("preferred_base_url", "") or ""),
+                "updated_at": updated_at,
+            }
+            latest_updated_at = updated_at
+    return latest
+
+
 @app.get("/api/model/options")
 def get_model_options():
     """Return authenticated providers + their curated model lists.
@@ -1053,7 +1087,7 @@ def get_auxiliary_models():
         else:
             main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
 
-        return {"tasks": tasks, "main": main}
+        return {"tasks": tasks, "main": main, "live_main": _read_live_main_model()}
     except Exception:
         _log.exception("GET /api/model/auxiliary failed")
         raise HTTPException(status_code=500, detail="Failed to read auxiliary config")

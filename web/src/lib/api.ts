@@ -641,6 +641,7 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+  live_main?: { provider: string; model: string; base_url?: string; updated_at?: string } | null;
 }
 
 export interface ModelAssignmentRequest {

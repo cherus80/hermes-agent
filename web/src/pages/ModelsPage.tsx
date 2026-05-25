@@ -460,6 +460,10 @@ function ModelSettingsPanel({
 
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
+  const liveMain = aux?.live_main ?? null;
+  const hasLiveOverride =
+    !!liveMain &&
+    (liveMain.provider !== mainProv || liveMain.model !== mainModel);
 
   const applyAssignment = async ({
     scope,
@@ -522,18 +526,32 @@ function ModelSettingsPanel({
       <CardContent className="space-y-3 pt-0">
         {/* Main row */}
         <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-0.5">
-              <Star className="h-3 w-3 text-primary" />
-              <span className="text-xs font-medium uppercase tracking-wider">
-                Main model
-              </span>
-            </div>
-            <div className="text-xs font-mono text-muted-foreground truncate">
-              {mainProv || "(unset)"}
-              {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
-            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 mb-0.5">
+                <Star className="h-3 w-3 text-primary" />
+                <span className="text-xs font-medium uppercase tracking-wider">
+                  Main model
+                </span>
+                {hasLiveOverride && (
+                  <Badge tone="secondary" className="text-[9px] uppercase tracking-wider">
+                    Live session
+                  </Badge>
+                )}
+              </div>
+              <div className="text-xs font-mono text-muted-foreground truncate">
+                {(hasLiveOverride ? liveMain?.provider : mainProv) || "(unset)"}
+                {((hasLiveOverride ? liveMain?.provider : mainProv) &&
+                  (hasLiveOverride ? liveMain?.model : mainModel)) &&
+                  " · "}
+                {(hasLiveOverride ? liveMain?.model : mainModel) || "(unset)"}
+              </div>
+              {hasLiveOverride && (
+                <div className="text-[10px] text-muted-foreground/70 truncate">
+                  Default for new sessions: {mainProv || "(unset)"}
+                  {mainProv && mainModel && " · "}
+                  {mainModel || "(unset)"}
+                </div>
+              )}
           </div>
           <Button
             size="sm"
