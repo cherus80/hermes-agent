@@ -6108,6 +6108,70 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _synthesize_codex_stream_response(
+        self,
+        *,
+        collected_output_items: list,
+        has_tool_calls: bool,
+    ) -> Optional[Any]:
+        """Rebuild a usable Responses payload from already-streamed Codex events.
+
+        ChatGPT's Codex backend can emit valid ``response.output_item.done``
+        and text delta events, then finish with ``response.completed`` whose
+        ``response.output`` field is unexpectedly ``None``. The OpenAI SDK
+        raises ``TypeError`` while parsing that terminal event, even though we
+        already have enough data to continue the turn safely.
+        """
+        if collected_output_items:
+            return SimpleNamespace(
+                output=list(collected_output_items),
+                status="completed",
+            )
+
+        if self._codex_streamed_text_parts and not has_tool_calls:
+            assembled = "".join(self._codex_streamed_text_parts)
+            if assembled:
+                return SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )
+                    ],
+                    status="completed",
+                    output_text=assembled,
+                )
+
+        return None
+
+    def _repair_codex_stream_final_response(
+        self,
+        final_response: Any,
+        *,
+        collected_output_items: list,
+        has_tool_calls: bool,
+    ) -> Any:
+        """Backfill/synthesize final Codex output when the SDK leaves it empty."""
+        current_output = getattr(final_response, "output", None)
+        if isinstance(current_output, list) and current_output:
+            return final_response
+
+        recovered = self._synthesize_codex_stream_response(
+            collected_output_items=collected_output_items,
+            has_tool_calls=has_tool_calls,
+        )
+        if recovered is None:
+            return final_response
+
+        final_response.output = recovered.output
+        if getattr(final_response, "status", None) is None:
+            final_response.status = getattr(recovered, "status", "completed")
+        if getattr(final_response, "output_text", None) is None:
+            final_response.output_text = getattr(recovered, "output_text", None)
+        return final_response
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -6174,29 +6238,13 @@ class AIAgent:
                                 self._client_log_context(),
                             )
                     final_response = stream.get_final_response()
-                    # PATCH: ChatGPT Codex backend streams valid output items
-                    # but get_final_response() can return an empty output list.
-                    # Backfill from collected items or synthesize from deltas.
-                    _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            final_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex stream: backfilled %d output items from stream events",
-                                len(collected_output_items),
-                            )
-                        elif self._codex_streamed_text_parts and not has_tool_calls:
-                            assembled = "".join(self._codex_streamed_text_parts)
-                            final_response.output = [SimpleNamespace(
-                                type="message",
-                                role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex stream: synthesized output from %d text deltas (%d chars)",
-                                len(self._codex_streamed_text_parts), len(assembled),
-                            )
+                    # PATCH: ChatGPT Codex backend can emit valid stream events
+                    # yet leave final_response.output empty or None.
+                    final_response = self._repair_codex_stream_final_response(
+                        final_response,
+                        collected_output_items=collected_output_items,
+                        has_tool_calls=has_tool_calls,
+                    )
                     return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
@@ -6232,6 +6280,28 @@ class AIAgent:
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
+            except (TypeError, ValueError) as exc:
+                recovered = self._synthesize_codex_stream_response(
+                    collected_output_items=collected_output_items,
+                    has_tool_calls=has_tool_calls,
+                )
+                if recovered is not None:
+                    logger.warning(
+                        "Codex Responses stream parser failed; recovered from streamed events "
+                        "(items=%d, streamed_chars=%d). %s error=%s",
+                        len(collected_output_items),
+                        sum(len(part) for part in self._codex_streamed_text_parts),
+                        self._client_log_context(),
+                        exc,
+                    )
+                    return recovered
+                logger.debug(
+                    "Codex Responses stream parser failed without recoverable payload; "
+                    "falling back to create(stream=True). %s error=%s",
+                    self._client_log_context(),
+                    exc,
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""

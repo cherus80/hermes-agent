@@ -176,6 +176,26 @@ class _FakeResponsesStream:
         return self._final_response
 
 
+class _BrokenTerminalResponsesStream:
+    def __init__(self, events, exc):
+        self._events = list(events)
+        self._exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise self._exc
+
+    def get_final_response(self):
+        raise AssertionError("get_final_response() should not run after terminal parser failure")
+
+
 class _FakeCreateStream:
     def __init__(self, events):
         self._events = list(events)
@@ -483,6 +503,95 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_from_sdk_parse_error_with_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    stream = _BrokenTerminalResponsesStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.in_progress"),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="OK")],
+                ),
+            ),
+        ],
+        TypeError("'NoneType' object is not iterable"),
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=lambda **kwargs: pytest.fail("create(stream=True) fallback should not be used"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "OK"
+
+
+def test_run_codex_stream_recovers_from_sdk_parse_error_with_text_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    stream = _BrokenTerminalResponsesStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.in_progress"),
+            SimpleNamespace(type="response.output_text.delta", delta="O"),
+            SimpleNamespace(type="response.output_text.delta", delta="K"),
+        ],
+        TypeError("'NoneType' object is not iterable"),
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=lambda **kwargs: pytest.fail("create(stream=True) fallback should not be used"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output_text == "OK"
+    assert response.output[0].content[0].text == "OK"
+
+
+def test_run_codex_stream_uses_create_fallback_when_sdk_parse_error_has_no_payload(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"create": 0}
+
+    stream = _BrokenTerminalResponsesStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.in_progress"),
+        ],
+        TypeError("'NoneType' object is not iterable"),
+    )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "create fallback ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
