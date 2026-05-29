@@ -23,6 +23,10 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+class MalformedCodexResponseError(RuntimeError):
+    """Responses payload from the Codex backend had an unexpected shape."""
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -753,9 +757,15 @@ def _extract_responses_message_text(item: Any) -> str:
     content = getattr(item, "content", None)
     if not isinstance(content, list):
         return ""
+    try:
+        content_parts = list(content)
+    except TypeError as exc:
+        raise MalformedCodexResponseError(
+            "Codex response message.content is not iterable"
+        ) from exc
 
     chunks: List[str] = []
-    for part in content:
+    for part in content_parts:
         ptype = getattr(part, "type", None)
         if ptype not in {"output_text", "text"}:
             continue
@@ -769,8 +779,14 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
     summary = getattr(item, "summary", None)
     if isinstance(summary, list):
+        try:
+            summary_parts = list(summary)
+        except TypeError as exc:
+            raise MalformedCodexResponseError(
+                "Codex response reasoning.summary is not iterable"
+            ) from exc
         chunks: List[str] = []
-        for part in summary:
+        for part in summary_parts:
             text = getattr(part, "text", None)
             if isinstance(text, str) and text:
                 chunks.append(text)
@@ -806,6 +822,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             response.output = output
         else:
             raise RuntimeError("Responses API returned no output items")
+    try:
+        output_items = list(output)
+    except TypeError as exc:
+        raise MalformedCodexResponseError(
+            "Codex response output is not iterable"
+        ) from exc
 
     response_status = getattr(response, "status", None)
     if isinstance(response_status, str):
@@ -830,7 +852,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     saw_commentary_phase = False
     saw_final_answer_phase = False
 
-    for item in output:
+    for item in output_items:
         item_type = getattr(item, "type", None)
         item_status = getattr(item, "status", None)
         if isinstance(item_status, str):
@@ -881,8 +903,14 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 # Capture summary — required by the API when replaying reasoning items
                 summary = getattr(item, "summary", None)
                 if isinstance(summary, list):
+                    try:
+                        summary_parts = list(summary)
+                    except TypeError as exc:
+                        raise MalformedCodexResponseError(
+                            "Codex response reasoning.summary is not iterable"
+                        ) from exc
                     raw_summary = []
-                    for part in summary:
+                    for part in summary_parts:
                         text = getattr(part, "text", None)
                         if isinstance(text, str):
                             raw_summary.append({"type": "summary_text", "text": text})

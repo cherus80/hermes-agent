@@ -8,6 +8,13 @@ from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+class _BrokenList(list):
+    """List-like payload whose iterator is broken like some malformed SDK objects."""
+
+    def __iter__(self):
+        return None
+
+
 @pytest.fixture
 def transport():
     import agent.transports.codex  # noqa: F401
@@ -262,3 +269,39 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+    def test_malformed_output_iterable_raises_runtime_error(self, transport):
+        """Broken Codex SDK payloads must not leak bare TypeError into the agent loop."""
+        r = SimpleNamespace(
+            output=_BrokenList(
+                [
+                    SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        content=[SimpleNamespace(type="output_text", text="hello")],
+                        status="completed",
+                    )
+                ]
+            ),
+            status="completed",
+        )
+
+        with pytest.raises(RuntimeError, match="output is not iterable|Malformed Codex response"):
+            transport.normalize_response(r)
+
+    def test_malformed_message_content_iterable_raises_runtime_error(self, transport):
+        """Broken nested message.content payloads should surface as recoverable provider errors."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    content=_BrokenList([SimpleNamespace(type="output_text", text="hello")]),
+                    status="completed",
+                )
+            ],
+            status="completed",
+        )
+
+        with pytest.raises(RuntimeError, match="message.content is not iterable|Malformed Codex response"):
+            transport.normalize_response(r)

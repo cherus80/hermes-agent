@@ -161,11 +161,19 @@ class ResponsesApiTransport(ProviderTransport):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Codex Responses API response to NormalizedResponse."""
         from agent.codex_responses_adapter import (
+            MalformedCodexResponseError,
             _normalize_codex_response,
         )
 
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
-        msg, finish_reason = _normalize_codex_response(response)
+        try:
+            msg, finish_reason = _normalize_codex_response(response)
+        except MalformedCodexResponseError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise MalformedCodexResponseError(
+                f"Malformed Codex response: {exc}"
+            ) from exc
 
         tool_calls = None
         if msg and msg.tool_calls:
