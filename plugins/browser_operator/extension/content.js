@@ -5,6 +5,46 @@
   const MAX_ELEMENTS = 500;
   let lastSnapshotAt = 0;
   let mutationTimer = null;
+  let cachedSettings = {
+    gatewayUrl: DEFAULT_GATEWAY,
+    sessionId: DEFAULT_SESSION,
+    token: ""
+  };
+  let extensionContextInvalidated = false;
+
+  function isExtensionContextInvalidated(err) {
+    return String(err && (err.message || err)).includes("Extension context invalidated");
+  }
+
+  function extensionContextAvailable() {
+    try {
+      return (
+        !extensionContextInvalidated &&
+        typeof chrome !== "undefined" &&
+        chrome.runtime &&
+        chrome.runtime.id &&
+        chrome.storage &&
+        chrome.storage.local
+      );
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  function handleAsyncError(err) {
+    if (isExtensionContextInvalidated(err)) {
+      extensionContextInvalidated = true;
+    }
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+
+  function quiet(fn) {
+    try {
+      return Promise.resolve(fn()).catch(handleAsyncError);
+    } catch (err) {
+      return Promise.resolve(handleAsyncError(err));
+    }
+  }
 
   function visible(el) {
     if (!el || !(el instanceof Element)) return false;
@@ -145,11 +185,14 @@
   }
 
   async function settings() {
-    return chrome.storage.local.get({
-      gatewayUrl: DEFAULT_GATEWAY,
-      sessionId: DEFAULT_SESSION,
-      token: ""
-    });
+    if (!extensionContextAvailable()) return cachedSettings;
+    try {
+      const cfg = await chrome.storage.local.get(cachedSettings);
+      cachedSettings = { ...cachedSettings, ...cfg };
+    } catch (err) {
+      handleAsyncError(err);
+    }
+    return cachedSettings;
   }
 
   async function postJson(path, payload) {
@@ -369,7 +412,7 @@
         if (action.type === "back") history.back();
         if (action.type === "forward") history.forward();
         if (action.type === "reload") location.reload();
-        setTimeout(() => sendSnapshot(true), 1000);
+        setTimeout(() => quiet(() => sendSnapshot(true)), 1000);
         return;
       }
 
@@ -382,7 +425,7 @@
           status: "done",
           message
         });
-        setTimeout(() => sendSnapshot(true), 900);
+        setTimeout(() => quiet(() => sendSnapshot(true)), 900);
         return;
       }
 
@@ -439,11 +482,11 @@
         message: `${action.type} completed.`,
         element: { score: found.score, label: labelForScore(found.el).slice(0, 300) }
       });
-      setTimeout(() => sendSnapshot(true), 800);
+      setTimeout(() => quiet(() => sendSnapshot(true)), 800);
     } catch (err) {
       await postJson("/v1/actions/result", {
         actionId,
-        sessionId: (await settings()).sessionId || DEFAULT_SESSION,
+        sessionId: cfg.sessionId || DEFAULT_SESSION,
         ok: false,
         status: "failed",
         error: String(err && err.message ? err.message : err)
@@ -464,23 +507,25 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message && message.type === "hermes:snapshotNow") {
-      sendSnapshot(true).then(sendResponse);
-      return true;
-    }
-    return false;
-  });
+  if (extensionContextAvailable()) {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message && message.type === "hermes:snapshotNow") {
+        quiet(() => sendSnapshot(true)).then(sendResponse);
+        return true;
+      }
+      return false;
+    });
+  }
 
   const observer = new MutationObserver(() => {
     clearTimeout(mutationTimer);
-    mutationTimer = setTimeout(() => sendSnapshot(false), 1200);
+    mutationTimer = setTimeout(() => quiet(() => sendSnapshot(false)), 1200);
   });
   if (document.body) {
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
   }
-  window.addEventListener("focus", () => sendSnapshot(false));
-  setInterval(() => sendSnapshot(false), 7000);
-  setInterval(pollActions, 2000);
-  setTimeout(() => sendSnapshot(true), 1000);
+  window.addEventListener("focus", () => quiet(() => sendSnapshot(false)));
+  setInterval(() => quiet(() => sendSnapshot(false)), 7000);
+  setInterval(() => quiet(() => pollActions()), 2000);
+  setTimeout(() => quiet(() => sendSnapshot(true)), 1000);
 })();
