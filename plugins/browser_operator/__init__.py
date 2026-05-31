@@ -8,16 +8,20 @@ from plugins.browser_operator.cli import browser_operator_command, register_cli
 from plugins.browser_operator.tools import (
     BROWSER_OPERATOR_ACTION_RESULT_SCHEMA,
     BROWSER_OPERATOR_AUTH_STATUS_SCHEMA,
+    BROWSER_OPERATOR_FIND_TAB_SCHEMA,
     BROWSER_OPERATOR_FIND_ELEMENTS_SCHEMA,
     BROWSER_OPERATOR_LATEST_SNAPSHOT_SCHEMA,
+    BROWSER_OPERATOR_LIST_TABS_SCHEMA,
     BROWSER_OPERATOR_NAVIGATE_PAGE_SCHEMA,
     BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA,
     BROWSER_OPERATOR_SCROLL_PAGE_SCHEMA,
     check_browser_operator_requirements,
     handle_action_result,
     handle_auth_status,
+    handle_find_tab,
     handle_find_elements,
     handle_latest_snapshot,
+    handle_list_tabs,
     handle_navigate_page,
     handle_queue_action,
     handle_scroll_page,
@@ -25,6 +29,8 @@ from plugins.browser_operator.tools import (
 
 
 _TOOLS = (
+    ("browser_operator_list_tabs", BROWSER_OPERATOR_LIST_TABS_SCHEMA, handle_list_tabs, "BR"),
+    ("browser_operator_find_tab", BROWSER_OPERATOR_FIND_TAB_SCHEMA, handle_find_tab, "BR"),
     ("browser_operator_latest_snapshot", BROWSER_OPERATOR_LATEST_SNAPSHOT_SCHEMA, handle_latest_snapshot, "BR"),
     ("browser_operator_find_elements", BROWSER_OPERATOR_FIND_ELEMENTS_SCHEMA, handle_find_elements, "BR"),
     ("browser_operator_scroll_page", BROWSER_OPERATOR_SCROLL_PAGE_SCHEMA, handle_scroll_page, "BR"),

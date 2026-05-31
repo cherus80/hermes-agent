@@ -9,7 +9,7 @@ Use this skill when the user wants Hermes to help with a live web page through t
 
 ## Operating model
 
-The Chrome extension is the page-side companion. It sends visible page snapshots to the Browser Operator bridge and polls for queued actions. Hermes tools read the latest snapshot, reason about the page, queue a small action, then inspect the result.
+The Chrome extension is the page-side companion. It sends visible page snapshots to the Browser Operator bridge and polls for queued actions. Each open tab is tracked by a stable `tab_id` such as `chrome-tab:123`, so Hermes can keep working with the intended page even if the user switches browser tabs. Hermes tools read the latest snapshot, reason about the page, queue a small action for a specific tab, then inspect the result.
 
 Default startup:
 
@@ -36,14 +36,17 @@ hermes browser-operator extension-path
 
 ## Tool workflow
 
-1. Call `browser_operator_latest_snapshot` to see the current page.
-2. Call `browser_operator_auth_status` if account state matters.
-3. Call `browser_operator_find_elements` with a semantic target such as `comment field`, `title input`, `publish button`, or `account menu`.
-4. If content is below or above the viewport, call `browser_operator_scroll_page`.
-5. For browser history or URL navigation, call `browser_operator_navigate_page`.
-6. If the target is clear, call `browser_operator_queue_action`.
-7. Poll `browser_operator_action_result` for the returned action id.
-8. Re-read `browser_operator_latest_snapshot` after scrolling, navigation, or form changes.
+1. Call `browser_operator_list_tabs` or `browser_operator_find_tab` when multiple tabs may be open.
+2. Pass the chosen `tab_id` to `browser_operator_latest_snapshot` to inspect the intended page.
+3. Call `browser_operator_auth_status` with the same `tab_id` if account state matters.
+4. Call `browser_operator_find_elements` with a semantic target such as `comment field`, `title input`, `publish button`, or `account menu`.
+5. If content is below or above the viewport, call `browser_operator_scroll_page` with the same `tab_id`.
+6. For browser history or URL navigation, call `browser_operator_navigate_page` with the same `tab_id`.
+7. If the target is clear, call `browser_operator_queue_action` with the same `tab_id`.
+8. Poll `browser_operator_action_result` for the returned action id.
+9. Re-read `browser_operator_latest_snapshot` after scrolling, navigation, or form changes.
+
+Snapshots include `regions`, which are larger page/card/article chunks. Use them to verify feed posts, Threads items, YouTube Studio rows, or other content where individual buttons do not carry enough context.
 
 ## Action guidance
 
@@ -55,6 +58,7 @@ hermes browser-operator extension-path
 - `navigate`: use `browser_operator_navigate_page`; URL changes require confirmation by default.
 - `back`, `forward`, `reload`: use `browser_operator_navigate_page` for browser navigation controls.
 - `auth_probe`: use when you need the extension to refresh login/account signals.
+- `focus_tab`: use through `browser_operator_queue_action` when the correct tab should be brought to the front.
 
 ## Login/session handling
 

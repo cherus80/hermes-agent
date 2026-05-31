@@ -69,14 +69,28 @@ def find_candidates(snapshot: Dict[str, Any], target: str, limit: int = 8) -> Li
 
 
 def summarize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    regions = snapshot.get("regions") or []
     return {
         "sessionId": snapshot.get("sessionId"),
         "tabId": snapshot.get("tabId"),
+        "browserTab": snapshot.get("browserTab") or {},
+        "extensionVersion": snapshot.get("extensionVersion"),
         "url": snapshot.get("url"),
         "title": snapshot.get("title"),
         "receivedAt": snapshot.get("receivedAt"),
         "textPreview": (snapshot.get("text") or "")[:1200],
         "elementCount": len(snapshot.get("elements") or []),
+        "regionCount": len(regions),
+        "regionPreview": [
+            {
+                "ref": region.get("ref"),
+                "role": region.get("role"),
+                "text": (region.get("text") or "")[:700],
+                "links": region.get("links") or [],
+                "numbers": region.get("numbers") or [],
+            }
+            for region in regions[:12]
+            if isinstance(region, dict)
+        ],
         "authSignals": snapshot.get("authSignals") or {},
     }
-

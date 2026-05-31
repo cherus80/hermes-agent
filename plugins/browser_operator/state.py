@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover
 
 MAX_TEXT_CHARS = 20000
 MAX_ELEMENTS = 500
+MAX_REGIONS = 120
 MAX_ACTIONS = 200
 MAX_RESULTS = 200
 
@@ -52,7 +53,7 @@ def audit_path() -> Path:
 
 def _default_state() -> Dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "snapshots": {},
         "tabs": {},
         "actions": {},
@@ -149,6 +150,44 @@ def _safe_element(raw: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _safe_region(raw: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "ref",
+        "tag",
+        "role",
+        "selector",
+        "text",
+        "ariaLabel",
+        "label",
+        "rect",
+        "links",
+        "numbers",
+    }
+    out = {key: raw.get(key) for key in allowed if key in raw}
+    for key in ("text", "ariaLabel", "label"):
+        if key in out:
+            out[key] = _trim_text(out.get(key), 2000)
+    if isinstance(out.get("links"), list):
+        safe_links = []
+        for link in out["links"][:20]:
+            if not isinstance(link, dict):
+                continue
+            safe_links.append(
+                {
+                    "text": _trim_text(link.get("text"), 300),
+                    "href": _trim_text(link.get("href"), 1000),
+                }
+            )
+        out["links"] = safe_links
+    else:
+        out["links"] = []
+    if isinstance(out.get("numbers"), list):
+        out["numbers"] = [_trim_text(item, 100) for item in out["numbers"][:40]]
+    else:
+        out["numbers"] = []
+    return out
+
+
 def normalize_snapshot(raw: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(raw.get("sessionId") or raw.get("session_id") or "default")
     tab_id = str(raw.get("tabId") or raw.get("tab_id") or "active")
@@ -156,13 +195,21 @@ def normalize_snapshot(raw: Dict[str, Any]) -> Dict[str, Any]:
     safe_elements = [
         _safe_element(item) for item in elements[:MAX_ELEMENTS] if isinstance(item, dict)
     ]
+    regions = raw.get("regions") if isinstance(raw.get("regions"), list) else []
+    safe_regions = [
+        _safe_region(item) for item in regions[:MAX_REGIONS] if isinstance(item, dict)
+    ]
+    browser_tab = raw.get("browserTab") if isinstance(raw.get("browserTab"), dict) else {}
     snapshot = {
         "sessionId": session_id,
         "tabId": tab_id,
+        "browserTab": browser_tab,
+        "extensionVersion": _trim_text(raw.get("extensionVersion"), 100),
         "url": _trim_text(raw.get("url"), 2000),
         "title": _trim_text(raw.get("title"), 500),
         "text": _trim_text(raw.get("text"), MAX_TEXT_CHARS),
         "elements": safe_elements,
+        "regions": safe_regions,
         "authSignals": raw.get("authSignals") if isinstance(raw.get("authSignals"), dict) else {},
         "viewport": raw.get("viewport") if isinstance(raw.get("viewport"), dict) else {},
         "createdAt": raw.get("createdAt") or utc_now(),
@@ -195,6 +242,93 @@ def latest_snapshot(session_id: str = "default") -> Optional[Dict[str, Any]]:
     data = read_state()
     snap = data.get("snapshots", {}).get(session_id)
     return snap if isinstance(snap, dict) else None
+
+
+def get_tab_snapshot(session_id: str = "default", tab_id: str = "") -> Optional[Dict[str, Any]]:
+    if not tab_id:
+        return latest_snapshot(session_id)
+    data = read_state()
+    snap = data.get("tabs", {}).get(f"{session_id}:{tab_id}")
+    return snap if isinstance(snap, dict) else None
+
+
+def _tab_summary(snap: Dict[str, Any]) -> Dict[str, Any]:
+    browser_tab = snap.get("browserTab") if isinstance(snap.get("browserTab"), dict) else {}
+    return {
+        "sessionId": snap.get("sessionId"),
+        "tabId": snap.get("tabId"),
+        "chromeTabId": browser_tab.get("chromeTabId"),
+        "windowId": browser_tab.get("windowId"),
+        "active": bool(browser_tab.get("active")),
+        "pinned": bool(browser_tab.get("pinned")),
+        "url": snap.get("url"),
+        "title": snap.get("title"),
+        "receivedAt": snap.get("receivedAt"),
+        "extensionVersion": snap.get("extensionVersion"),
+        "elements": len(snap.get("elements") or []),
+        "regions": len(snap.get("regions") or []),
+        "textPreview": (snap.get("text") or "")[:500],
+    }
+
+
+def list_tabs(session_id: str = "default", query: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+    data = read_state()
+    query_l = (query or "").lower().strip()
+    rows: List[Dict[str, Any]] = []
+    for snap in data.get("tabs", {}).values():
+        if not isinstance(snap, dict):
+            continue
+        if str(snap.get("sessionId") or "default") != session_id:
+            continue
+        haystack = "\n".join(
+            str(part or "")
+            for part in (
+                snap.get("tabId"),
+                snap.get("title"),
+                snap.get("url"),
+                snap.get("text"),
+            )
+        ).lower()
+        if query_l and query_l not in haystack:
+            continue
+        rows.append(_tab_summary(snap))
+    rows.sort(key=lambda item: str(item.get("receivedAt") or ""), reverse=True)
+    return rows[: max(1, min(int(limit or 20), 100))]
+
+
+def find_tabs(session_id: str = "default", query: str = "", limit: int = 8) -> List[Dict[str, Any]]:
+    words = [part for part in (query or "").lower().split() if part]
+    rows: List[Dict[str, Any]] = []
+    data = read_state()
+    for snap in data.get("tabs", {}).values():
+        if not isinstance(snap, dict):
+            continue
+        if str(snap.get("sessionId") or "default") != session_id:
+            continue
+        haystack = "\n".join(
+            str(part or "")
+            for part in (
+                snap.get("tabId"),
+                snap.get("title"),
+                snap.get("url"),
+                snap.get("text"),
+            )
+        ).lower()
+        score = 0.0
+        if query and query.lower() in haystack:
+            score += 5.0
+        for word in words:
+            if word in haystack:
+                score += 1.0
+        if not words:
+            score = 1.0
+        if score <= 0:
+            continue
+        item = _tab_summary(snap)
+        item["score"] = round(score, 3)
+        rows.append(item)
+    rows.sort(key=lambda item: (float(item.get("score") or 0), str(item.get("receivedAt") or "")), reverse=True)
+    return rows[: max(1, min(int(limit or 8), 25))]
 
 
 def list_sessions() -> List[Dict[str, Any]]:
@@ -241,6 +375,7 @@ def queue_action(action: Dict[str, Any]) -> Dict[str, Any]:
             {
                 "id": action_id,
                 "sessionId": session_id,
+                "tabId": normalized["tabId"],
                 "type": normalized["type"],
                 "target": normalized["target"],
                 "requiresUserConfirm": normalized["requiresUserConfirm"],
@@ -259,7 +394,7 @@ def next_action(session_id: str = "default", tab_id: str = "active") -> Optional
                 if isinstance(item, dict)
                 and item.get("sessionId") == session_id
                 and item.get("status") == "queued"
-                and item.get("tabId", "active") in ("active", tab_id)
+                and item.get("tabId", "active") in ("active", "*", tab_id)
             ),
             key=lambda item: item.get("createdAt", ""),
         )
@@ -280,6 +415,7 @@ def record_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     result = {
         "actionId": action_id,
         "sessionId": str(raw.get("sessionId") or raw.get("session_id") or "default"),
+        "tabId": str(raw.get("tabId") or raw.get("tab_id") or ""),
         "ok": bool(raw.get("ok")),
         "status": str(raw.get("status") or ("done" if raw.get("ok") else "failed")),
         "error": _trim_text(raw.get("error"), 1000),
@@ -292,6 +428,8 @@ def record_result(raw: Dict[str, Any]) -> Dict[str, Any]:
         data["results"][action_id] = result
         action = data.get("actions", {}).get(action_id)
         if isinstance(action, dict):
+            if not result["tabId"]:
+                result["tabId"] = str(action.get("tabId") or "")
             action["status"] = result["status"]
             action["completedAt"] = result["createdAt"]
             action["ok"] = result["ok"]
@@ -303,6 +441,7 @@ def record_result(raw: Dict[str, Any]) -> Dict[str, Any]:
             {
                 "id": action_id,
                 "sessionId": result["sessionId"],
+                "tabId": result["tabId"],
                 "ok": result["ok"],
                 "status": result["status"],
                 "error": result["error"],
@@ -327,4 +466,3 @@ def _prune_unlocked(data: Dict[str, Any]) -> None:
             key=lambda pair: pair[1].get("createdAt", "") if isinstance(pair[1], dict) else "",
         )
         data[key] = dict(ordered[-limit:])
-

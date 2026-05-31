@@ -20,6 +20,57 @@ def _args(args: Dict[str, Any] | None) -> Dict[str, Any]:
     return args if isinstance(args, dict) else {}
 
 
+def _snapshot_for(session_id: str, tab_id: str = "") -> Dict[str, Any] | None:
+    return state.get_tab_snapshot(session_id, tab_id) if tab_id else state.latest_snapshot(session_id)
+
+
+def _target_tab_id(args: Dict[str, Any], session_id: str) -> str:
+    tab_id = str(args.get("tab_id") or args.get("tabId") or "").strip()
+    if tab_id:
+        return tab_id
+    snapshot = state.latest_snapshot(session_id)
+    if isinstance(snapshot, dict) and snapshot.get("tabId"):
+        return str(snapshot.get("tabId"))
+    return "active"
+
+
+BROWSER_OPERATOR_LIST_TABS_SCHEMA: Dict[str, Any] = {
+    "name": "browser_operator_list_tabs",
+    "description": (
+        "List browser tabs currently known to Hermes Browser Operator. Use this "
+        "when the user changes tabs or when you need to target a specific open tab."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "query": {"type": "string", "description": "Optional URL/title/text filter."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+BROWSER_OPERATOR_FIND_TAB_SCHEMA: Dict[str, Any] = {
+    "name": "browser_operator_find_tab",
+    "description": (
+        "Find the most likely open browser tab by URL, title, or page text. "
+        "Returns tab_id values that can be passed to other browser_operator tools."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Target tab hint, e.g. 'Threads', 'YouTube Studio', or a URL."},
+            "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 25},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
+
 BROWSER_OPERATOR_LATEST_SNAPSHOT_SCHEMA: Dict[str, Any] = {
     "name": "browser_operator_latest_snapshot",
     "description": (
@@ -33,7 +84,11 @@ BROWSER_OPERATOR_LATEST_SNAPSHOT_SCHEMA: Dict[str, Any] = {
             "session_id": {
                 "type": "string",
                 "description": "Browser operator session id. Defaults to 'default'.",
-            }
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Optional specific tab id from browser_operator_list_tabs/find_tab.",
+            },
         },
         "additionalProperties": False,
     },
@@ -52,6 +107,7 @@ BROWSER_OPERATOR_FIND_ELEMENTS_SCHEMA: Dict[str, Any] = {
         "properties": {
             "target": {"type": "string", "description": "Natural language UI target."},
             "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "tab_id": {"type": "string", "description": "Optional specific tab id."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 25},
         },
         "required": ["target"],
@@ -83,6 +139,7 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
                     "forward",
                     "reload",
                     "auth_probe",
+                    "focus_tab",
                 ],
             },
             "target": {
@@ -98,6 +155,7 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
                 "description": "Short user-facing reason shown by the extension before confirmation.",
             },
             "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "tab_id": {"type": "string", "description": "Specific tab id from browser_operator_list_tabs/find_tab."},
             "requires_user_confirm": {
                 "type": "boolean",
                 "description": (
@@ -139,6 +197,7 @@ BROWSER_OPERATOR_SCROLL_PAGE_SCHEMA: Dict[str, Any] = {
                 "description": "Whether amount is pages or pixels. Defaults to pages.",
             },
             "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "tab_id": {"type": "string", "description": "Specific tab id to scroll."},
             "reason": {
                 "type": "string",
                 "description": "Optional short reason for the audit log.",
@@ -169,6 +228,7 @@ BROWSER_OPERATOR_NAVIGATE_PAGE_SCHEMA: Dict[str, Any] = {
                 "description": "Destination URL for action=navigate.",
             },
             "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "tab_id": {"type": "string", "description": "Specific tab id to navigate."},
             "requires_user_confirm": {
                 "type": "boolean",
                 "description": "Override confirmation. URL navigation defaults to true.",
@@ -208,6 +268,7 @@ BROWSER_OPERATOR_AUTH_STATUS_SCHEMA: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "tab_id": {"type": "string", "description": "Optional specific tab id."},
             "expected_account": {
                 "type": "string",
                 "description": "Optional account/channel/user hint to look for in page text.",
@@ -218,10 +279,42 @@ BROWSER_OPERATOR_AUTH_STATUS_SCHEMA: Dict[str, Any] = {
 }
 
 
+def handle_list_tabs(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
+    session_id = str(args.get("session_id") or "default")
+    query = str(args.get("query") or "")
+    try:
+        limit = int(args.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    return _json({"ok": True, "tabs": state.list_tabs(session_id=session_id, query=query, limit=limit)})
+
+
+def handle_find_tab(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
+    session_id = str(args.get("session_id") or "default")
+    query = str(args.get("query") or "").strip()
+    try:
+        limit = int(args.get("limit") or 8)
+    except (TypeError, ValueError):
+        limit = 8
+    matches = state.find_tabs(session_id=session_id, query=query, limit=limit)
+    return _json(
+        {
+            "ok": True,
+            "query": query,
+            "matches": matches,
+            "bestTabId": matches[0]["tabId"] if matches else None,
+            "needsUserChoice": not matches or float(matches[0].get("score") or 0) < 2.0,
+        }
+    )
+
+
 def handle_latest_snapshot(args: Dict[str, Any] | None = None, **_: Any) -> str:
     args = _args(args)
     session_id = str(args.get("session_id") or "default")
-    snapshot = state.latest_snapshot(session_id)
+    tab_id = str(args.get("tab_id") or "")
+    snapshot = _snapshot_for(session_id, tab_id)
     if not snapshot:
         return _json(
             {
@@ -229,6 +322,7 @@ def handle_latest_snapshot(args: Dict[str, Any] | None = None, **_: Any) -> str:
                 "error": "No browser snapshot received yet.",
                 "hint": "Start `hermes browser-operator serve`, load the extension, and open a page.",
                 "sessions": state.list_sessions(),
+                "tabs": state.list_tabs(session_id=session_id, limit=50),
             }
         )
     return _json({"ok": True, "snapshot": resolver.summarize_snapshot(snapshot)})
@@ -237,9 +331,10 @@ def handle_latest_snapshot(args: Dict[str, Any] | None = None, **_: Any) -> str:
 def handle_find_elements(args: Dict[str, Any] | None = None, **_: Any) -> str:
     args = _args(args)
     session_id = str(args.get("session_id") or "default")
+    tab_id = str(args.get("tab_id") or "")
     target = str(args.get("target") or "").strip()
     limit = int(args.get("limit") or 8)
-    snapshot = state.latest_snapshot(session_id)
+    snapshot = _snapshot_for(session_id, tab_id)
     if not snapshot:
         return _json({"ok": False, "error": "No browser snapshot received yet."})
     candidates = resolver.find_candidates(snapshot, target, limit)
@@ -259,6 +354,7 @@ def handle_queue_action(args: Dict[str, Any] | None = None, **_: Any) -> str:
     args = _args(args)
     action_type = str(args.get("action") or "highlight")
     session_id = str(args.get("session_id") or "default")
+    tab_id = _target_tab_id(args, session_id)
     risky = action_type in {"click", "navigate"}
     if "requires_user_confirm" in args:
         requires_confirm = bool(args.get("requires_user_confirm"))
@@ -267,6 +363,7 @@ def handle_queue_action(args: Dict[str, Any] | None = None, **_: Any) -> str:
     queued = state.queue_action(
         {
             "sessionId": session_id,
+            "tabId": tab_id,
             "type": action_type,
             "target": str(args.get("target") or ""),
             "value": args.get("value"),
@@ -297,9 +394,11 @@ def handle_scroll_page(args: Dict[str, Any] | None = None, **_: Any) -> str:
         amount = 1
     amount = max(1, min(amount, 10000))
     session_id = str(args.get("session_id") or "default")
+    tab_id = _target_tab_id(args, session_id)
     queued = state.queue_action(
         {
             "sessionId": session_id,
+            "tabId": tab_id,
             "type": "scroll",
             "target": direction,
             "value": {"direction": direction, "amount": amount, "unit": unit},
@@ -325,6 +424,7 @@ def handle_navigate_page(args: Dict[str, Any] | None = None, **_: Any) -> str:
     if action_type == "navigate" and not url:
         return _json({"ok": False, "error": "url is required for action=navigate"})
     session_id = str(args.get("session_id") or "default")
+    tab_id = _target_tab_id(args, session_id)
     if "requires_user_confirm" in args:
         requires_confirm = bool(args.get("requires_user_confirm"))
     else:
@@ -332,6 +432,7 @@ def handle_navigate_page(args: Dict[str, Any] | None = None, **_: Any) -> str:
     queued = state.queue_action(
         {
             "sessionId": session_id,
+            "tabId": tab_id,
             "type": action_type,
             "target": url if action_type == "navigate" else action_type,
             "value": url if action_type == "navigate" else "",
@@ -360,8 +461,9 @@ def handle_action_result(args: Dict[str, Any] | None = None, **_: Any) -> str:
 def handle_auth_status(args: Dict[str, Any] | None = None, **_: Any) -> str:
     args = _args(args)
     session_id = str(args.get("session_id") or "default")
+    tab_id = str(args.get("tab_id") or "")
     expected = str(args.get("expected_account") or "").strip().lower()
-    snapshot = state.latest_snapshot(session_id)
+    snapshot = _snapshot_for(session_id, tab_id)
     if not snapshot:
         return _json({"ok": False, "error": "No browser snapshot received yet."})
 

@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Hermes Browser Operator",
   "description": "Controlled browser companion for Hermes Agent: page snapshots, semantic element actions, and user-confirmed automation.",
-  "version": "0.2.6",
-  "permissions": ["activeTab", "storage", "tabs"],
+  "version": "0.3.0",
+  "permissions": ["activeTab", "storage", "tabs", "windows"],
   "host_permissions": [
     "http://127.0.0.1:8765/*",
     "http://localhost:8765/*",
@@ -24,6 +24,9 @@
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     }
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {

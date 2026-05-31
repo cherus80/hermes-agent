@@ -79,6 +79,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": "hermes-browser-operator",
                     "sessions": state.list_sessions(),
+                    "tabs": state.list_tabs(limit=50),
                     "auth": "token" if getattr(self.server, "token", "") else "none",
                 },
             )
@@ -93,10 +94,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/v1/state":
             session_id = (qs.get("sessionId") or qs.get("session_id") or ["default"])[0]
-            snapshot = state.latest_snapshot(session_id)
+            tab_id = (qs.get("tabId") or qs.get("tab_id") or [""])[0]
+            snapshot = state.get_tab_snapshot(session_id, tab_id) if tab_id else state.latest_snapshot(session_id)
             self._send_json(
                 HTTPStatus.OK,
-                {"ok": True, "sessions": state.list_sessions(), "snapshot": snapshot},
+                {"ok": True, "sessions": state.list_sessions(), "tabs": state.list_tabs(session_id=session_id, limit=50), "snapshot": snapshot},
+            )
+            return
+        if parsed.path == "/v1/tabs":
+            session_id = (qs.get("sessionId") or qs.get("session_id") or ["default"])[0]
+            query = (qs.get("query") or [""])[0]
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "tabs": state.list_tabs(session_id=session_id, query=query, limit=100)},
             )
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
@@ -138,4 +148,3 @@ def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, token: str = "") -
     else:
         print("browser-operator: token auth disabled; use localhost only")
     httpd.serve_forever()
-

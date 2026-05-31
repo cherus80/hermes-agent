@@ -1,9 +1,10 @@
 (function () {
   const DEFAULT_GATEWAY = "http://127.0.0.1:8765";
   const DEFAULT_SESSION = "default";
-  const EXTENSION_VERSION = "0.2.6";
+  const EXTENSION_VERSION = "0.3.0";
   const MAX_TEXT = 20000;
   const MAX_ELEMENTS = 500;
+  const MAX_REGIONS = 120;
   const INTERACTIVE_SELECTORS = [
     "a[href]",
     "button",
@@ -20,6 +21,8 @@
   let mutationTimer = null;
   let snapshotFailureCount = 0;
   let pauseAutoSnapshotsUntil = 0;
+  let tabInfo = null;
+  let fallbackTabId = "";
   let cachedSettings = {
     gatewayUrl: DEFAULT_GATEWAY,
     sessionId: DEFAULT_SESSION,
@@ -68,6 +71,64 @@
       }
     } catch (_err) {
       // Diagnostic marker only.
+    }
+  }
+
+  function fallbackPageTabId() {
+    if (fallbackTabId) return fallbackTabId;
+    try {
+      const key = "hermesBrowserOperatorFallbackTabId";
+      fallbackTabId = window.sessionStorage.getItem(key) || "";
+      if (!fallbackTabId) {
+        fallbackTabId = `page:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+        window.sessionStorage.setItem(key, fallbackTabId);
+      }
+    } catch (_err) {
+      fallbackTabId = `page:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return fallbackTabId;
+  }
+
+  async function getTabInfo(refresh = false) {
+    const fallback = {
+      tabId: fallbackPageTabId(),
+      title: document.title || "",
+      url: location.href,
+      active: document.visibilityState === "visible",
+      extensionVersion: EXTENSION_VERSION
+    };
+    if (!refresh && tabInfo && tabInfo.tabId) return tabInfo;
+    if (!extensionContextAvailable() || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+      tabInfo = fallback;
+      return tabInfo;
+    }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "hermes:getTabInfo" });
+      if (response && response.ok && response.tab && response.tab.tabId) {
+        tabInfo = {
+          ...response.tab,
+          title: response.tab.title || document.title || "",
+          url: response.tab.url || location.href,
+          extensionVersion: EXTENSION_VERSION
+        };
+        return tabInfo;
+      }
+    } catch (err) {
+      handleAsyncError(err);
+    }
+    tabInfo = fallback;
+    return tabInfo;
+  }
+
+  async function focusCurrentTab() {
+    if (!extensionContextAvailable() || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+      return { ok: false, error: "Extension background is unavailable." };
+    }
+    try {
+      return await chrome.runtime.sendMessage({ type: "hermes:focusSelf" });
+    } catch (err) {
+      handleAsyncError(err);
+      return { ok: false, error: String(err && err.message ? err.message : err) };
     }
   }
 
@@ -247,6 +308,68 @@
     return elements;
   }
 
+  function collectLinks(root) {
+    const links = [];
+    const seen = new Set();
+    for (const link of safeQuerySelectorAll("a[href]", root)) {
+      try {
+        const href = link.href || safeAttr(link, "href");
+        if (!href || seen.has(href)) continue;
+        seen.add(href);
+        links.push({ text: textOf(link, 180), href });
+        if (links.length >= 20) break;
+      } catch (_err) {
+        // Ignore transient link nodes.
+      }
+    }
+    return links;
+  }
+
+  function collectNumbers(text) {
+    const matches = String(text || "").match(/(?:^|\s)(?:\d+[\d.,]*\s*(?:K|M|тыс\.?|млн\.?)?|\d+)(?=\s|$)/gi) || [];
+    return Array.from(new Set(matches.map((item) => item.trim()).filter(Boolean))).slice(0, 40);
+  }
+
+  function collectRegions() {
+    const selectors = [
+      "article",
+      "[role='article']",
+      "[data-testid='cellInnerDiv']",
+      "[data-pressable-container='true']",
+      "section",
+      "li"
+    ];
+    const regions = [];
+    const seen = new Set();
+    for (const el of safeQuerySelectorAll(selectors)) {
+      if (regions.length >= MAX_REGIONS) break;
+      try {
+        if (seen.has(el) || !visible(el)) continue;
+        seen.add(el);
+        const rect = safeRect(el);
+        const text = textOf(el, 2000);
+        if (text.length < 20) continue;
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.height > window.innerHeight * 2.5 && safeAttr(el, "role") !== "article") continue;
+        regions.push({
+          ref: `r${regions.length + 1}`,
+          tag: el.tagName.toLowerCase(),
+          role: safeAttr(el, "role"),
+          selector: stableSelector(el),
+          text,
+          ariaLabel: safeAttr(el, "aria-label"),
+          label: elementLabel(el),
+          rect,
+          links: collectLinks(el),
+          numbers: collectNumbers(text)
+        });
+      } catch (_err) {
+        // Keep the snapshot alive even on highly dynamic feeds.
+      }
+    }
+    return regions;
+  }
+
   function collectAuthSignals(elements) {
     const loginRe = /\b(sign in|log in|login|continue with google|войти|авториз|вход)\b/i;
     const accountRe = /\b(account|profile|avatar|my channel|your channel|аккаунт|профиль|канал)\b/i;
@@ -321,14 +444,19 @@
       if (!force && now - lastSnapshotAt < 2500) return { ok: true, skipped: true };
       lastSnapshotAt = now;
       const cfg = await settings();
+      const currentTab = await getTabInfo(true);
       const elements = collectElements();
+      const regions = collectRegions();
       const snapshot = {
         sessionId: cfg.sessionId || DEFAULT_SESSION,
-        tabId: "active",
+        tabId: currentTab.tabId || fallbackPageTabId(),
+        browserTab: currentTab,
+        extensionVersion: EXTENSION_VERSION,
         url: location.href,
         title: document.title,
         text: visibleText(),
         elements,
+        regions,
         authSignals: collectAuthSignals(elements),
         viewport: {
           width: window.innerWidth,
@@ -517,6 +645,20 @@
         return;
       }
 
+      if (action.type === "focus_tab") {
+        const focused = await focusCurrentTab();
+        await postJson("/v1/actions/result", {
+          actionId,
+          sessionId: cfg.sessionId || DEFAULT_SESSION,
+          ok: Boolean(focused && focused.ok),
+          status: focused && focused.ok ? "done" : "failed",
+          message: focused && focused.ok ? "Tab focused." : "",
+          error: focused && focused.ok ? "" : String((focused && focused.error) || "Unable to focus tab.")
+        });
+        setTimeout(() => quiet(() => sendSnapshot(true)), 500);
+        return;
+      }
+
       if (action.type === "scroll") {
         const message = scrollPage(action);
         await postJson("/v1/actions/result", {
@@ -597,9 +739,11 @@
 
   async function pollActions() {
     const cfg = await settings();
+    const currentTab = await getTabInfo(true);
     const sessionId = encodeURIComponent(cfg.sessionId || DEFAULT_SESSION);
+    const tabId = encodeURIComponent(currentTab.tabId || fallbackPageTabId());
     try {
-      const response = await getJson(`/v1/actions/next?sessionId=${sessionId}&tabId=active`);
+      const response = await getJson(`/v1/actions/next?sessionId=${sessionId}&tabId=${tabId}`);
       if (response && response.ok && response.action) {
         await executeAction(response.action);
       }
