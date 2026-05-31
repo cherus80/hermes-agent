@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Hermes Browser Operator",
+  "description": "Controlled browser companion for Hermes Agent: page snapshots, semantic element actions, and user-confirmed automation.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*",
+    "https://ai-pub.mix4.ru/*"
+  ],
+  "action": {
+    "default_title": "Hermes Browser Operator",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

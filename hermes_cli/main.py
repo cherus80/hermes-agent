@@ -9793,10 +9793,12 @@ Examples:
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
     # =========================================================================
+    seen_plugin_cli_names = set()
     try:
         from plugins.memory import discover_plugin_cli_commands
 
         for cmd_info in discover_plugin_cli_commands():
+            seen_plugin_cli_names.add(cmd_info["name"])
             plugin_parser = subparsers.add_parser(
                 cmd_info["name"],
                 help=cmd_info["help"],
@@ -9805,7 +9807,24 @@ Examples:
             )
             cmd_info["setup_fn"](plugin_parser)
     except Exception as _exc:
-        logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+        logging.getLogger(__name__).debug("Memory plugin CLI discovery failed: %s", _exc)
+
+    try:
+        from hermes_cli.plugins import get_plugin_cli_commands
+
+        for cmd_info in get_plugin_cli_commands():
+            if cmd_info["name"] in seen_plugin_cli_names:
+                continue
+            seen_plugin_cli_names.add(cmd_info["name"])
+            plugin_parser = subparsers.add_parser(
+                cmd_info["name"],
+                help=cmd_info["help"],
+                description=cmd_info.get("description", ""),
+                formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+            )
+            cmd_info["setup_fn"](plugin_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("General plugin CLI discovery failed: %s", _exc)
 
     # =========================================================================
     # curator command — background skill maintenance

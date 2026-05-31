@@ -1,0 +1,66 @@
+---
+name: browser-operator
+description: Use the Hermes Browser Operator extension to inspect a live browser page, find UI elements, prepare drafts, fill forms, verify login state, and queue user-confirmed browser actions when no official API is available.
+---
+
+# Hermes Browser Operator
+
+Use this skill when the user wants Hermes to help with a live web page through the browser instead of an official API: drafting comments, filling publishing forms, navigating an interface, checking that the right account is signed in, or preparing a post for final human review.
+
+## Operating model
+
+The Chrome extension is the page-side companion. It sends visible page snapshots to the Browser Operator bridge and polls for queued actions. Hermes tools read the latest snapshot, reason about the page, queue a small action, then inspect the result.
+
+Default startup:
+
+```bash
+hermes plugins enable browser_operator
+hermes browser-operator serve
+```
+
+Load the unpacked extension from:
+
+```bash
+hermes browser-operator extension-path
+```
+
+## Safety rules
+
+- Do not bypass CAPTCHA, 2FA, paywalls, anti-bot systems, bank/payment flows, or site restrictions.
+- Treat send, publish, delete, purchase, settings changes, and account changes as high-risk actions.
+- For high-risk actions, queue only a user-confirmed action and explain what will happen.
+- Prefer draft mode: fill text and stop before final submit/publish.
+- Do not request or reveal passwords, cookies, access tokens, refresh tokens, or session secrets.
+- Use the user's existing browser session as the primary auth method.
+- If a session has expired, ask the user to sign in or complete 2FA manually.
+
+## Tool workflow
+
+1. Call `browser_operator_latest_snapshot` to see the current page.
+2. Call `browser_operator_auth_status` if account state matters.
+3. Call `browser_operator_find_elements` with a semantic target such as `comment field`, `title input`, `publish button`, or `account menu`.
+4. If the target is clear, call `browser_operator_queue_action`.
+5. Poll `browser_operator_action_result` for the returned action id.
+6. Re-read `browser_operator_latest_snapshot` after navigation or form changes.
+
+## Action guidance
+
+- `highlight`: safe first step when confidence is low.
+- `fill`: acceptable for drafts and form fields.
+- `select`: acceptable for dropdown choices.
+- `click`: requires confirmation for risky buttons.
+- `navigate`: requires confirmation unless it is a harmless internal page change.
+- `auth_probe`: use when you need the extension to refresh login/account signals.
+
+## Login/session handling
+
+Use `browser_operator_auth_status` before starting a workflow that requires an account. It is a heuristic. If the expected account is not visible, ask the user to check the page.
+
+Recommended modes:
+
+- `session_only`: use the already signed-in browser profile.
+- `assisted_login`: open the login page and let the user enter credentials manually.
+- `vault_login`: reserved for trusted future flows where secrets are injected by a protected secret manager and never shown to the LLM.
+
+The first implementation supports `session_only` and `assisted_login` patterns. Do not invent password automation unless the user has explicitly configured a protected vault flow.
+

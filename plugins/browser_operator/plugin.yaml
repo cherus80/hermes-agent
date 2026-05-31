@@ -1,0 +1,15 @@
+name: browser_operator
+version: 0.1.0
+description: "Browser operator companion: a controlled Chrome extension plus Hermes tools for reading pages, resolving UI elements, filling forms, and queueing user-confirmed browser actions."
+author: Hermes Agent
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - browser_operator_latest_snapshot
+  - browser_operator_find_elements
+  - browser_operator_queue_action
+  - browser_operator_action_result
+  - browser_operator_auth_status
+

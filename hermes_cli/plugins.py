@@ -1018,6 +1018,10 @@ class PluginManager:
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
+                loaded.commands_registered.extend(
+                    c for c, entry in self._cli_commands.items()
+                    if entry.get("plugin") == manifest.name
+                )
                 loaded.enabled = True
 
         except Exception as exc:
@@ -1319,6 +1323,11 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_cli_commands() -> List[dict]:
+    """Return top-level CLI commands registered by enabled plugins."""
+    return list(_ensure_plugins_discovered()._cli_commands.values())
 
 
 def get_plugin_toolsets() -> List[tuple]:
