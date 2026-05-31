@@ -16,6 +16,10 @@ def check_browser_operator_requirements() -> bool:
     return True
 
 
+def _args(args: Dict[str, Any] | None) -> Dict[str, Any]:
+    return args if isinstance(args, dict) else {}
+
+
 BROWSER_OPERATOR_LATEST_SNAPSHOT_SCHEMA: Dict[str, Any] = {
     "name": "browser_operator_latest_snapshot",
     "description": (
@@ -132,7 +136,8 @@ BROWSER_OPERATOR_AUTH_STATUS_SCHEMA: Dict[str, Any] = {
 }
 
 
-def handle_latest_snapshot(args: Dict[str, Any]) -> str:
+def handle_latest_snapshot(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
     session_id = str(args.get("session_id") or "default")
     snapshot = state.latest_snapshot(session_id)
     if not snapshot:
@@ -147,7 +152,8 @@ def handle_latest_snapshot(args: Dict[str, Any]) -> str:
     return _json({"ok": True, "snapshot": resolver.summarize_snapshot(snapshot)})
 
 
-def handle_find_elements(args: Dict[str, Any]) -> str:
+def handle_find_elements(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
     session_id = str(args.get("session_id") or "default")
     target = str(args.get("target") or "").strip()
     limit = int(args.get("limit") or 8)
@@ -167,7 +173,8 @@ def handle_find_elements(args: Dict[str, Any]) -> str:
     )
 
 
-def handle_queue_action(args: Dict[str, Any]) -> str:
+def handle_queue_action(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
     action_type = str(args.get("action") or "highlight")
     session_id = str(args.get("session_id") or "default")
     risky = action_type in {"click", "navigate"}
@@ -194,7 +201,8 @@ def handle_queue_action(args: Dict[str, Any]) -> str:
     )
 
 
-def handle_action_result(args: Dict[str, Any]) -> str:
+def handle_action_result(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
     action_id = str(args.get("action_id") or "")
     result = state.get_result(action_id)
     if not result:
@@ -202,7 +210,8 @@ def handle_action_result(args: Dict[str, Any]) -> str:
     return _json({"ok": True, "result": result})
 
 
-def handle_auth_status(args: Dict[str, Any]) -> str:
+def handle_auth_status(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
     session_id = str(args.get("session_id") or "default")
     expected = str(args.get("expected_account") or "").strip().lower()
     snapshot = state.latest_snapshot(session_id)
@@ -248,4 +257,3 @@ def handle_auth_status(args: Dict[str, Any]) -> str:
             ),
         }
     )
-
