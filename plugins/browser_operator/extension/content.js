@@ -3,6 +3,18 @@
   const DEFAULT_SESSION = "default";
   const MAX_TEXT = 20000;
   const MAX_ELEMENTS = 500;
+  const INTERACTIVE_SELECTORS = [
+    "a[href]",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[role='button']",
+    "[role='link']",
+    "[role='textbox']",
+    "[contenteditable='true']",
+    "[tabindex]"
+  ];
   let lastSnapshotAt = 0;
   let mutationTimer = null;
   let cachedSettings = {
@@ -65,6 +77,49 @@
     }
   }
 
+  function safeQuerySelectorAll(selectors, root = document) {
+    const queryRoot = root && typeof root.querySelectorAll === "function" ? root : null;
+    if (!queryRoot) return [];
+    const selectorList = Array.isArray(selectors) ? selectors : String(selectors || "").split(",");
+    const elements = [];
+    const seen = new Set();
+    for (const rawSelector of selectorList) {
+      const selector = String(rawSelector || "").trim();
+      if (!selector) continue;
+      try {
+        for (const el of Array.from(queryRoot.querySelectorAll(selector) || [])) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          elements.push(el);
+        }
+      } catch (_err) {
+        // Some pages patch or break DOM querying. Skip the bad selector and keep collecting.
+      }
+    }
+    return elements;
+  }
+
+  function safeAttr(el, name) {
+    try {
+      return el && typeof el.getAttribute === "function" ? el.getAttribute(name) || "" : "";
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function safeClosest(el, selector) {
+    try {
+      return el && typeof el.closest === "function" ? el.closest(selector) : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function cssEscape(value) {
+    if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(String(value));
+    return cssString(value);
+  }
+
   function visible(el) {
     if (!el || !(el instanceof Element)) return false;
     let style;
@@ -82,29 +137,33 @@
 
   function textOf(el, limit = 300) {
     if (!el) return "";
-    const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-    return text.slice(0, limit);
+    try {
+      const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      return text.slice(0, limit);
+    } catch (_err) {
+      return "";
+    }
   }
 
   function labelFor(el) {
     if (!el) return "";
-    const id = el.getAttribute("id");
+    const id = safeAttr(el, "id");
     if (id) {
-      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      const label = safeQuerySelectorAll(`label[for="${cssEscape(id)}"]`)[0];
       if (label) return textOf(label);
     }
-    const parentLabel = el.closest("label");
+    const parentLabel = safeClosest(el, "label");
     if (parentLabel) return textOf(parentLabel);
     return "";
   }
 
   function stableSelector(el) {
     if (!el || !(el instanceof Element)) return "";
-    const id = el.getAttribute("id");
-    if (id) return `#${CSS.escape(id)}`;
-    const aria = el.getAttribute("aria-label");
+    const id = safeAttr(el, "id");
+    if (id) return `#${cssEscape(id)}`;
+    const aria = safeAttr(el, "aria-label");
     if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssString(aria)}"]`;
-    const name = el.getAttribute("name");
+    const name = safeAttr(el, "name");
     if (name) return `${el.tagName.toLowerCase()}[name="${cssString(name)}"]`;
     const parts = [];
     let node = el;
@@ -126,52 +185,44 @@
   }
 
   function nearText(el) {
-    const parent = el.closest("section, article, form, div, li") || el.parentElement;
+    const parent = safeClosest(el, "section, article, form, div, li") || el.parentElement;
     return textOf(parent, 250);
   }
 
   function collectElements() {
-    const selector = [
-      "a[href]",
-      "button",
-      "input",
-      "textarea",
-      "select",
-      "[role='button']",
-      "[role='link']",
-      "[role='textbox']",
-      "[contenteditable='true']",
-      "[tabindex]"
-    ].join(",");
     const elements = [];
     const seen = new Set();
-    for (const el of document.querySelectorAll(selector)) {
+    for (const el of safeQuerySelectorAll(INTERACTIVE_SELECTORS)) {
       if (elements.length >= MAX_ELEMENTS) break;
-      if (seen.has(el) || !visible(el)) continue;
-      seen.add(el);
-      const rect = safeRect(el);
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      const isPassword = type === "password";
-      elements.push({
-        ref: `e${elements.length + 1}`,
-        tag: el.tagName.toLowerCase(),
-        role: el.getAttribute("role") || "",
-        type,
-        text: isPassword ? "" : textOf(el),
-        ariaLabel: el.getAttribute("aria-label") || "",
-        placeholder: isPassword ? "" : (el.getAttribute("placeholder") || ""),
-        label: isPassword ? "" : labelFor(el),
-        name: el.getAttribute("name") || "",
-        id: el.getAttribute("id") || "",
-        selector: stableSelector(el),
-        href: el instanceof HTMLAnchorElement ? el.href : "",
-        visible: true,
-        enabled: !el.disabled,
-        rect,
-        nearText: isPassword ? "" : nearText(el),
-        hasValue: !isPassword && "value" in el ? Boolean(el.value) : undefined
-      });
+      try {
+        if (seen.has(el) || !visible(el)) continue;
+        seen.add(el);
+        const rect = safeRect(el);
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const type = safeAttr(el, "type").toLowerCase();
+        const isPassword = type === "password";
+        elements.push({
+          ref: `e${elements.length + 1}`,
+          tag: el.tagName.toLowerCase(),
+          role: safeAttr(el, "role"),
+          type,
+          text: isPassword ? "" : textOf(el),
+          ariaLabel: safeAttr(el, "aria-label"),
+          placeholder: isPassword ? "" : safeAttr(el, "placeholder"),
+          label: isPassword ? "" : labelFor(el),
+          name: safeAttr(el, "name"),
+          id: safeAttr(el, "id"),
+          selector: stableSelector(el),
+          href: el instanceof HTMLAnchorElement ? el.href : "",
+          visible: true,
+          enabled: !el.disabled,
+          rect,
+          nearText: isPassword ? "" : nearText(el),
+          hasValue: !isPassword && "value" in el ? Boolean(el.value) : undefined
+        });
+      } catch (_err) {
+        // One hostile or transient element should not prevent the page snapshot.
+      }
     }
     return elements;
   }
@@ -296,25 +347,17 @@
   }
 
   function resolveElement(target) {
-    const selector = [
-      "a[href]",
-      "button",
-      "input",
-      "textarea",
-      "select",
-      "[role='button']",
-      "[role='link']",
-      "[role='textbox']",
-      "[contenteditable='true']",
-      "[tabindex]"
-    ].join(",");
     let best = null;
     let bestScore = 0;
-    for (const el of document.querySelectorAll(selector)) {
-      const score = scoreElement(el, target);
-      if (score > bestScore) {
-        best = el;
-        bestScore = score;
+    for (const el of safeQuerySelectorAll(INTERACTIVE_SELECTORS)) {
+      try {
+        const score = scoreElement(el, target);
+        if (score > bestScore) {
+          best = el;
+          bestScore = score;
+        }
+      } catch (_err) {
+        // Ignore elements that disappear while we are scoring the page.
       }
     }
     return { el: best, score: bestScore };

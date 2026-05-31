@@ -1,5 +1,5 @@
 name: browser_operator
-version: 0.2.3
+version: 0.2.4
 description: "Browser operator companion: a controlled Chrome extension plus Hermes tools for reading pages, resolving UI elements, filling forms, and queueing user-confirmed browser actions."
 author: Hermes Agent
 kind: standalone
