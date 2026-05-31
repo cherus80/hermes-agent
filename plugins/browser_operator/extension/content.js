@@ -300,6 +300,40 @@
     return false;
   }
 
+  function valueObject(action) {
+    if (action && action.value && typeof action.value === "object") return action.value;
+    return {};
+  }
+
+  function scrollPage(action) {
+    const value = valueObject(action);
+    const direction = String(value.direction || action.target || "down").toLowerCase();
+    const unit = String(value.unit || "pages").toLowerCase();
+    const rawAmount = Number(value.amount || action.value || 1);
+    const amount = Number.isFinite(rawAmount) && rawAmount > 0 ? rawAmount : 1;
+    const pixels = unit === "pixels" ? amount : Math.round(window.innerHeight * 0.85 * amount);
+
+    if (direction === "top") {
+      window.scrollTo({ top: 0, left: window.scrollX, behavior: "smooth" });
+      return "Scrolled to top.";
+    }
+    if (direction === "bottom") {
+      window.scrollTo({ top: document.documentElement.scrollHeight, left: window.scrollX, behavior: "smooth" });
+      return "Scrolled to bottom.";
+    }
+    window.scrollBy({
+      top: direction === "up" ? -pixels : pixels,
+      left: 0,
+      behavior: "smooth"
+    });
+    return `Scrolled ${direction} by ${Math.round(pixels)}px.`;
+  }
+
+  function confirmNavigation(action, label) {
+    if (!action.requiresUserConfirm) return true;
+    return window.confirm(`Hermes wants to ${label}.\n\n${action.reason || ""}`);
+  }
+
   async function executeAction(action) {
     const cfg = await settings();
     const actionId = action.id;
@@ -307,7 +341,7 @@
       if (action.type === "navigate") {
         const url = String(action.value || action.target || "");
         if (!url) throw new Error("No URL provided.");
-        if (action.requiresUserConfirm && !window.confirm(`Hermes wants to navigate to:\n${url}\n\n${action.reason || ""}`)) {
+        if (!confirmNavigation(action, `navigate to:\n${url}`)) {
           throw new Error("User cancelled navigation.");
         }
         location.href = url;
@@ -318,6 +352,37 @@
           status: "done",
           message: "Navigation started."
         });
+        return;
+      }
+
+      if (["back", "forward", "reload"].includes(action.type)) {
+        if (!confirmNavigation(action, action.type)) {
+          throw new Error(`User cancelled ${action.type}.`);
+        }
+        await postJson("/v1/actions/result", {
+          actionId,
+          sessionId: cfg.sessionId || DEFAULT_SESSION,
+          ok: true,
+          status: "done",
+          message: `${action.type} started.`
+        });
+        if (action.type === "back") history.back();
+        if (action.type === "forward") history.forward();
+        if (action.type === "reload") location.reload();
+        setTimeout(() => sendSnapshot(true), 1000);
+        return;
+      }
+
+      if (action.type === "scroll") {
+        const message = scrollPage(action);
+        await postJson("/v1/actions/result", {
+          actionId,
+          sessionId: cfg.sessionId || DEFAULT_SESSION,
+          ok: true,
+          status: "done",
+          message
+        });
+        setTimeout(() => sendSnapshot(true), 900);
         return;
       }
 
@@ -419,4 +484,3 @@
   setInterval(pollActions, 2000);
   setTimeout(() => sendSnapshot(true), 1000);
 })();
-

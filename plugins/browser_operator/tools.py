@@ -72,7 +72,18 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["highlight", "click", "fill", "select", "navigate", "auth_probe"],
+                "enum": [
+                    "highlight",
+                    "click",
+                    "fill",
+                    "select",
+                    "scroll",
+                    "navigate",
+                    "back",
+                    "forward",
+                    "reload",
+                    "auth_probe",
+                ],
             },
             "target": {
                 "type": "string",
@@ -96,6 +107,77 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
             },
         },
         "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
+
+BROWSER_OPERATOR_SCROLL_PAGE_SCHEMA: Dict[str, Any] = {
+    "name": "browser_operator_scroll_page",
+    "description": (
+        "Scroll the current browser page through the Hermes Browser Operator "
+        "extension, then refresh the page snapshot. Use this when content is "
+        "below/above the visible viewport."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": ["down", "up", "top", "bottom"],
+                "description": "Scroll direction. Defaults to down.",
+            },
+            "amount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000,
+                "description": "Pixels or pages to scroll. Defaults to 1 page.",
+            },
+            "unit": {
+                "type": "string",
+                "enum": ["pages", "pixels"],
+                "description": "Whether amount is pages or pixels. Defaults to pages.",
+            },
+            "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "reason": {
+                "type": "string",
+                "description": "Optional short reason for the audit log.",
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+BROWSER_OPERATOR_NAVIGATE_PAGE_SCHEMA: Dict[str, Any] = {
+    "name": "browser_operator_navigate_page",
+    "description": (
+        "Control browser page navigation through the extension: navigate to a "
+        "URL, go back, go forward, or reload. URL navigation asks the user for "
+        "confirmation by default."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["navigate", "back", "forward", "reload"],
+                "description": "Navigation action. Defaults to reload.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Destination URL for action=navigate.",
+            },
+            "session_id": {"type": "string", "description": "Defaults to 'default'."},
+            "requires_user_confirm": {
+                "type": "boolean",
+                "description": "Override confirmation. URL navigation defaults to true.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Short user-facing reason shown before confirmed navigation.",
+            },
+        },
         "additionalProperties": False,
     },
 }
@@ -197,6 +279,71 @@ def handle_queue_action(args: Dict[str, Any] | None = None, **_: Any) -> str:
             "ok": True,
             "action": queued,
             "hint": "Poll browser_operator_action_result with this action id after the extension executes it.",
+        }
+    )
+
+
+def handle_scroll_page(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
+    direction = str(args.get("direction") or "down").lower()
+    if direction not in {"down", "up", "top", "bottom"}:
+        direction = "down"
+    unit = str(args.get("unit") or "pages").lower()
+    if unit not in {"pages", "pixels"}:
+        unit = "pages"
+    try:
+        amount = int(args.get("amount") or 1)
+    except (TypeError, ValueError):
+        amount = 1
+    amount = max(1, min(amount, 10000))
+    session_id = str(args.get("session_id") or "default")
+    queued = state.queue_action(
+        {
+            "sessionId": session_id,
+            "type": "scroll",
+            "target": direction,
+            "value": {"direction": direction, "amount": amount, "unit": unit},
+            "reason": str(args.get("reason") or f"scroll {direction}"),
+            "requiresUserConfirm": False,
+        }
+    )
+    return _json(
+        {
+            "ok": True,
+            "action": queued,
+            "hint": "The extension will scroll the current page and refresh the snapshot.",
+        }
+    )
+
+
+def handle_navigate_page(args: Dict[str, Any] | None = None, **_: Any) -> str:
+    args = _args(args)
+    action_type = str(args.get("action") or "reload").lower()
+    if action_type not in {"navigate", "back", "forward", "reload"}:
+        action_type = "reload"
+    url = str(args.get("url") or "").strip()
+    if action_type == "navigate" and not url:
+        return _json({"ok": False, "error": "url is required for action=navigate"})
+    session_id = str(args.get("session_id") or "default")
+    if "requires_user_confirm" in args:
+        requires_confirm = bool(args.get("requires_user_confirm"))
+    else:
+        requires_confirm = action_type == "navigate"
+    queued = state.queue_action(
+        {
+            "sessionId": session_id,
+            "type": action_type,
+            "target": url if action_type == "navigate" else action_type,
+            "value": url if action_type == "navigate" else "",
+            "reason": str(args.get("reason") or action_type),
+            "requiresUserConfirm": requires_confirm,
+        }
+    )
+    return _json(
+        {
+            "ok": True,
+            "action": queued,
+            "hint": "The extension will perform the navigation action, then refresh the snapshot when possible.",
         }
     )
 

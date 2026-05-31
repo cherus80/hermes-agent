@@ -39,17 +39,21 @@ hermes browser-operator extension-path
 1. Call `browser_operator_latest_snapshot` to see the current page.
 2. Call `browser_operator_auth_status` if account state matters.
 3. Call `browser_operator_find_elements` with a semantic target such as `comment field`, `title input`, `publish button`, or `account menu`.
-4. If the target is clear, call `browser_operator_queue_action`.
-5. Poll `browser_operator_action_result` for the returned action id.
-6. Re-read `browser_operator_latest_snapshot` after navigation or form changes.
+4. If content is below or above the viewport, call `browser_operator_scroll_page`.
+5. For browser history or URL navigation, call `browser_operator_navigate_page`.
+6. If the target is clear, call `browser_operator_queue_action`.
+7. Poll `browser_operator_action_result` for the returned action id.
+8. Re-read `browser_operator_latest_snapshot` after scrolling, navigation, or form changes.
 
 ## Action guidance
 
 - `highlight`: safe first step when confidence is low.
+- `scroll`: use `browser_operator_scroll_page` for page movement; no confirmation needed.
 - `fill`: acceptable for drafts and form fields.
 - `select`: acceptable for dropdown choices.
 - `click`: requires confirmation for risky buttons.
-- `navigate`: requires confirmation unless it is a harmless internal page change.
+- `navigate`: use `browser_operator_navigate_page`; URL changes require confirmation by default.
+- `back`, `forward`, `reload`: use `browser_operator_navigate_page` for browser navigation controls.
 - `auth_probe`: use when you need the extension to refresh login/account signals.
 
 ## Login/session handling
@@ -63,4 +67,3 @@ Recommended modes:
 - `vault_login`: reserved for trusted future flows where secrets are injected by a protected secret manager and never shown to the LLM.
 
 The first implementation supports `session_only` and `assisted_login` patterns. Do not invent password automation unless the user has explicitly configured a protected vault flow.
-
