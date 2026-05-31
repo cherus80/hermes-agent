@@ -146,38 +146,41 @@
   }
 
   function labelFor(el) {
-    if (!el) return "";
-    const id = safeAttr(el, "id");
-    if (id) {
-      const label = safeQuerySelectorAll(`label[for="${cssEscape(id)}"]`)[0];
-      if (label) return textOf(label);
+    try {
+      if (!el) return "";
+      const parentLabel = safeClosest(el, "label");
+      if (parentLabel) return textOf(parentLabel);
+      return safeAttr(el, "title") || safeAttr(el, "aria-description") || "";
+    } catch (_err) {
+      return "";
     }
-    const parentLabel = safeClosest(el, "label");
-    if (parentLabel) return textOf(parentLabel);
-    return "";
   }
 
   function stableSelector(el) {
-    if (!el || !(el instanceof Element)) return "";
-    const id = safeAttr(el, "id");
-    if (id) return `#${cssEscape(id)}`;
-    const aria = safeAttr(el, "aria-label");
-    if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssString(aria)}"]`;
-    const name = safeAttr(el, "name");
-    if (name) return `${el.tagName.toLowerCase()}[name="${cssString(name)}"]`;
-    const parts = [];
-    let node = el;
-    while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
-      const tag = node.tagName.toLowerCase();
-      let index = 1;
-      let sib = node;
-      while ((sib = sib.previousElementSibling)) {
-        if (sib.tagName.toLowerCase() === tag) index += 1;
+    try {
+      if (!el || !(el instanceof Element)) return "";
+      const id = safeAttr(el, "id");
+      if (id) return `#${cssEscape(id)}`;
+      const aria = safeAttr(el, "aria-label");
+      if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssString(aria)}"]`;
+      const name = safeAttr(el, "name");
+      if (name) return `${el.tagName.toLowerCase()}[name="${cssString(name)}"]`;
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+        const tag = node.tagName.toLowerCase();
+        let index = 1;
+        let sib = node;
+        while ((sib = sib.previousElementSibling)) {
+          if (sib.tagName.toLowerCase() === tag) index += 1;
+        }
+        parts.unshift(`${tag}:nth-of-type(${index})`);
+        node = node.parentElement;
       }
-      parts.unshift(`${tag}:nth-of-type(${index})`);
-      node = node.parentElement;
+      return parts.join(" > ");
+    } catch (_err) {
+      return "";
     }
-    return parts.join(" > ");
   }
 
   function cssString(value) {
@@ -185,8 +188,12 @@
   }
 
   function nearText(el) {
-    const parent = safeClosest(el, "section, article, form, div, li") || el.parentElement;
-    return textOf(parent, 250);
+    try {
+      const parent = safeClosest(el, "section, article, form, div, li") || el.parentElement;
+      return textOf(parent, 250);
+    } catch (_err) {
+      return "";
+    }
   }
 
   function collectElements() {
@@ -251,8 +258,12 @@
   }
 
   function visibleText() {
-    const text = (document.body ? document.body.innerText : "").replace(/\s+/g, " ").trim();
-    return text.slice(0, MAX_TEXT);
+    try {
+      const text = (document.body ? document.body.innerText : "").replace(/\s+/g, " ").trim();
+      return text.slice(0, MAX_TEXT);
+    } catch (_err) {
+      return "";
+    }
   }
 
   async function settings() {
@@ -289,30 +300,30 @@
   }
 
   async function sendSnapshot(force = false) {
-    const now = Date.now();
-    if (!force && now - lastSnapshotAt < 2500) return { ok: true, skipped: true };
-    lastSnapshotAt = now;
-    const cfg = await settings();
-    const elements = collectElements();
-    const snapshot = {
-      sessionId: cfg.sessionId || DEFAULT_SESSION,
-      tabId: "active",
-      url: location.href,
-      title: document.title,
-      text: visibleText(),
-      elements,
-      authSignals: collectAuthSignals(elements),
-      viewport: {
-        width: window.innerWidth,
-        height: window.innerHeight,
-        devicePixelRatio: window.devicePixelRatio || 1
-      },
-      createdAt: new Date().toISOString()
-    };
     try {
+      const now = Date.now();
+      if (!force && now - lastSnapshotAt < 2500) return { ok: true, skipped: true };
+      lastSnapshotAt = now;
+      const cfg = await settings();
+      const elements = collectElements();
+      const snapshot = {
+        sessionId: cfg.sessionId || DEFAULT_SESSION,
+        tabId: "active",
+        url: location.href,
+        title: document.title,
+        text: visibleText(),
+        elements,
+        authSignals: collectAuthSignals(elements),
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio || 1
+        },
+        createdAt: new Date().toISOString()
+      };
       return await postJson("/v1/snapshots", snapshot);
     } catch (err) {
-      return { ok: false, error: String(err) };
+      return handleAsyncError(err);
     }
   }
 
