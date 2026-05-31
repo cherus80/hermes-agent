@@ -1,6 +1,7 @@
 (function () {
   const DEFAULT_GATEWAY = "http://127.0.0.1:8765";
   const DEFAULT_SESSION = "default";
+  const EXTENSION_VERSION = "0.2.6";
   const MAX_TEXT = 20000;
   const MAX_ELEMENTS = 500;
   const INTERACTIVE_SELECTORS = [
@@ -17,6 +18,8 @@
   ];
   let lastSnapshotAt = 0;
   let mutationTimer = null;
+  let snapshotFailureCount = 0;
+  let pauseAutoSnapshotsUntil = 0;
   let cachedSettings = {
     gatewayUrl: DEFAULT_GATEWAY,
     sessionId: DEFAULT_SESSION,
@@ -55,6 +58,16 @@
       return Promise.resolve(fn()).catch(handleAsyncError);
     } catch (err) {
       return Promise.resolve(handleAsyncError(err));
+    }
+  }
+
+  function markVersion() {
+    try {
+      if (document.documentElement) {
+        document.documentElement.setAttribute("data-hermes-browser-operator-version", EXTENSION_VERSION);
+      }
+    } catch (_err) {
+      // Diagnostic marker only.
     }
   }
 
@@ -145,12 +158,12 @@
     }
   }
 
-  function labelFor(el) {
+  function elementLabel(el) {
     try {
       if (!el) return "";
       const parentLabel = safeClosest(el, "label");
       if (parentLabel) return textOf(parentLabel);
-      return safeAttr(el, "title") || safeAttr(el, "aria-description") || "";
+      return safeAttr(el, "aria-label") || safeAttr(el, "title") || safeAttr(el, "aria-description") || "";
     } catch (_err) {
       return "";
     }
@@ -216,7 +229,7 @@
           text: isPassword ? "" : textOf(el),
           ariaLabel: safeAttr(el, "aria-label"),
           placeholder: isPassword ? "" : safeAttr(el, "placeholder"),
-          label: isPassword ? "" : labelFor(el),
+          label: isPassword ? "" : elementLabel(el),
           name: safeAttr(el, "name"),
           id: safeAttr(el, "id"),
           selector: stableSelector(el),
@@ -302,6 +315,9 @@
   async function sendSnapshot(force = false) {
     try {
       const now = Date.now();
+      if (!force && pauseAutoSnapshotsUntil && now < pauseAutoSnapshotsUntil) {
+        return { ok: true, skipped: true, paused: true };
+      }
       if (!force && now - lastSnapshotAt < 2500) return { ok: true, skipped: true };
       lastSnapshotAt = now;
       const cfg = await settings();
@@ -321,26 +337,37 @@
         },
         createdAt: new Date().toISOString()
       };
-      return await postJson("/v1/snapshots", snapshot);
+      const response = await postJson("/v1/snapshots", snapshot);
+      snapshotFailureCount = 0;
+      pauseAutoSnapshotsUntil = 0;
+      return response;
     } catch (err) {
+      snapshotFailureCount += 1;
+      if (!force && snapshotFailureCount >= 3) {
+        pauseAutoSnapshotsUntil = Date.now() + 30000;
+      }
       return handleAsyncError(err);
     }
   }
 
-  function labelForScore(el) {
-    return [
-      el.innerText || el.textContent || "",
-      el.getAttribute("aria-label") || "",
-      el.getAttribute("placeholder") || "",
-      labelFor(el),
-      el.getAttribute("name") || "",
-      el.getAttribute("id") || "",
-      nearText(el)
-    ].join(" ").toLowerCase();
+  function elementScoreText(el) {
+    try {
+      return [
+        textOf(el, 500),
+        safeAttr(el, "aria-label"),
+        safeAttr(el, "placeholder"),
+        elementLabel(el),
+        safeAttr(el, "name"),
+        safeAttr(el, "id"),
+        nearText(el)
+      ].join(" ").toLowerCase();
+    } catch (_err) {
+      return "";
+    }
   }
 
   function scoreElement(el, target) {
-    const label = labelForScore(el);
+    const label = elementScoreText(el);
     const words = String(target || "").toLowerCase().match(/[\w-]+/g) || [];
     let score = 0;
     if (target && label.includes(String(target).toLowerCase())) score += 4;
@@ -528,7 +555,7 @@
           ok: true,
           status: "done",
           message: "Element highlighted.",
-          element: { score: found.score, label: labelForScore(found.el).slice(0, 300) }
+          element: { score: found.score, label: elementScoreText(found.el).slice(0, 300) }
         });
         return;
       }
@@ -554,7 +581,7 @@
         ok: true,
         status: "done",
         message: `${action.type} completed.`,
-        element: { score: found.score, label: labelForScore(found.el).slice(0, 300) }
+        element: { score: found.score, label: elementScoreText(found.el).slice(0, 300) }
       });
       setTimeout(() => quiet(() => sendSnapshot(true)), 800);
     } catch (err) {
@@ -591,12 +618,14 @@
     });
   }
 
+  markVersion();
   const observer = new MutationObserver(() => {
+    if (Date.now() < pauseAutoSnapshotsUntil) return;
     clearTimeout(mutationTimer);
-    mutationTimer = setTimeout(() => quiet(() => sendSnapshot(false)), 1200);
+    mutationTimer = setTimeout(() => quiet(() => sendSnapshot(false)), 1600);
   });
   if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: false });
   }
   window.addEventListener("focus", () => quiet(() => sendSnapshot(false)));
   setInterval(() => quiet(() => sendSnapshot(false)), 7000);

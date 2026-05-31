@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Hermes Browser Operator",
   "description": "Controlled browser companion for Hermes Agent: page snapshots, semantic element actions, and user-confirmed automation.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "permissions": ["activeTab", "storage", "tabs"],
   "host_permissions": [
     "http://127.0.0.1:8765/*",
