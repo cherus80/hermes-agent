@@ -13,8 +13,20 @@
         background: #f6f7f9;
       }
       h1 {
-        margin: 0 0 10px;
+        margin: 0;
         font-size: 16px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        box-shadow: 0 8px 18px rgba(21, 94, 239, 0.22);
       }
       label {
         display: block;
@@ -62,7 +74,10 @@
     </style>
   </head>
   <body>
-    <h1>Hermes Browser Operator</h1>
+    <div class="header">
+      <img class="logo" src="icons/icon-48.png" alt="" />
+      <h1>Hermes Browser Operator</h1>
+    </div>
 
     <label for="gatewayUrl">Gateway URL</label>
     <input id="gatewayUrl" placeholder="http://127.0.0.1:8765" />
@@ -84,4 +99,3 @@
     <script src="popup.js"></script>
   </body>
 </html>
-
