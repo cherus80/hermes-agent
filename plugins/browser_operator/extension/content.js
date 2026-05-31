@@ -46,13 +46,37 @@
     }
   }
 
+  function finiteNumber(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function safeRect(el) {
+    try {
+      const rect = el && typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : null;
+      return {
+        x: Math.round(finiteNumber(rect && (rect.x ?? rect.left))),
+        y: Math.round(finiteNumber(rect && (rect.y ?? rect.top))),
+        width: Math.max(0, Math.round(finiteNumber(rect && rect.width))),
+        height: Math.max(0, Math.round(finiteNumber(rect && rect.height)))
+      };
+    } catch (_err) {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+  }
+
   function visible(el) {
     if (!el || !(el instanceof Element)) return false;
-    const style = window.getComputedStyle(el);
+    let style;
+    try {
+      style = window.getComputedStyle(el);
+    } catch (_err) {
+      return false;
+    }
     if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
       return false;
     }
-    const rect = el.getBoundingClientRect();
+    const rect = safeRect(el);
     return rect.width > 0 && rect.height > 0;
   }
 
@@ -125,7 +149,8 @@
       if (elements.length >= MAX_ELEMENTS) break;
       if (seen.has(el) || !visible(el)) continue;
       seen.add(el);
-      const rect = el.getBoundingClientRect();
+      const rect = safeRect(el);
+      if (rect.width <= 0 || rect.height <= 0) continue;
       const type = (el.getAttribute("type") || "").toLowerCase();
       const isPassword = type === "password";
       elements.push({
@@ -143,12 +168,7 @@
         href: el instanceof HTMLAnchorElement ? el.href : "",
         visible: true,
         enabled: !el.disabled,
-        rect: {
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height)
-        },
+        rect,
         nearText: isPassword ? "" : nearText(el),
         hasValue: !isPassword && "value" in el ? Boolean(el.value) : undefined
       });
