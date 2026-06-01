@@ -33,20 +33,20 @@
       token: els.token.value,
       actionApprovalMode: els.actionApprovalMode.value === "auto" ? "auto" : "confirm"
     });
-    setStatus(els.actionApprovalMode.value === "auto" ? "Saved. Auto actions enabled." : "Saved. Confirmation mode enabled.");
+    setStatus(els.actionApprovalMode.value === "auto" ? "Сохранено. Авторежим включён." : "Сохранено. Режим подтверждений включён.");
   });
 
   els.snapshot.addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.id) {
-      setStatus("No active tab.");
+      setStatus("Нет активной вкладки.");
       return;
     }
     try {
       const response = await chrome.tabs.sendMessage(tab.id, { type: "hermes:snapshotNow" });
-      setStatus(response && response.ok ? "Snapshot sent." : "Snapshot failed.");
+      setStatus(response && response.ok ? "Снимок отправлен." : "Не удалось отправить снимок.");
     } catch (err) {
-      setStatus("Reload the page, then try again.");
+      setStatus("Обнови страницу и попробуй снова.");
     }
   });
 })();

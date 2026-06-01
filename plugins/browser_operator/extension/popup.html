@@ -88,30 +88,31 @@
       <h1>Hermes Browser Operator</h1>
     </div>
 
-    <label for="gatewayUrl">Gateway URL</label>
+    <label for="gatewayUrl">URL шлюза</label>
     <input id="gatewayUrl" placeholder="http://127.0.0.1:8765" />
 
-    <label for="sessionId">Session ID</label>
+    <label for="sessionId">ID сессии</label>
     <input id="sessionId" placeholder="default" />
 
-    <label for="token">Token</label>
-    <input id="token" type="password" placeholder="optional" />
+    <label for="token">Токен</label>
+    <input id="token" type="password" placeholder="необязательно" />
 
-    <label for="actionApprovalMode">Action approval mode</label>
+    <label for="actionApprovalMode">Режим подтверждений</label>
     <select id="actionApprovalMode">
-      <option value="confirm">Ask before page actions</option>
-      <option value="auto">Allow actions without prompts</option>
+      <option value="confirm">Спрашивать перед действиями</option>
+      <option value="auto">Выполнять без подтверждений</option>
     </select>
 
     <div class="row">
-      <button id="save">Save</button>
-      <button id="snapshot" class="secondary">Send snapshot</button>
+      <button id="save">Сохранить</button>
+      <button id="snapshot" class="secondary">Отправить снимок</button>
     </div>
 
     <div id="status"></div>
     <div class="hint">
-      Use your current browser login session. Safe mode asks before clicks,
-      form changes, and navigation; auto mode runs queued actions immediately.
+      Используется текущая авторизация браузера. Безопасный режим спрашивает
+      перед кликами, заполнением форм и навигацией; авторежим выполняет
+      поставленные действия сразу.
     </div>
 
     <script src="popup.js"></script>

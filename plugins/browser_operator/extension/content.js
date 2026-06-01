@@ -1,7 +1,7 @@
 (function () {
   const DEFAULT_GATEWAY = "http://127.0.0.1:8765";
   const DEFAULT_SESSION = "default";
-  const EXTENSION_VERSION = "0.3.1";
+  const EXTENSION_VERSION = "0.3.2";
   const MAX_TEXT = 20000;
   const MAX_ELEMENTS = 500;
   const MAX_REGIONS = 120;
@@ -859,18 +859,35 @@
 
     if (direction === "top") {
       window.scrollTo({ top: 0, left: window.scrollX, behavior: "smooth" });
-      return "Scrolled to top.";
+      return "Прокрутил к началу страницы.";
     }
     if (direction === "bottom") {
       window.scrollTo({ top: document.documentElement.scrollHeight, left: window.scrollX, behavior: "smooth" });
-      return "Scrolled to bottom.";
+      return "Прокрутил к концу страницы.";
     }
     window.scrollBy({
       top: direction === "up" ? -pixels : pixels,
       left: 0,
       behavior: "smooth"
     });
-    return `Scrolled ${direction} by ${Math.round(pixels)}px.`;
+    return `Прокрутил ${direction === "up" ? "вверх" : "вниз"} на ${Math.round(pixels)} пикс.`;
+  }
+
+  function actionNameRu(type) {
+    const names = {
+      navigate: "перейти по адресу",
+      back: "вернуться назад",
+      forward: "перейти вперёд",
+      reload: "обновить страницу",
+      focus_tab: "переключиться на вкладку",
+      scroll: "прокрутить страницу",
+      auth_probe: "проверить авторизацию",
+      highlight: "подсветить элемент",
+      click: "нажать",
+      fill: "заполнить",
+      select: "выбрать"
+    };
+    return names[type] || String(type || "действие");
   }
 
   function actionApprovalMode(cfg) {
@@ -884,8 +901,8 @@
   function confirmAction(cfg, action, label) {
     if (actionApprovalMode(cfg) === "auto") return true;
     if (!isConfirmableAction(action)) return true;
-    const reason = action.reason ? `\n\nReason: ${action.reason}` : "";
-    return window.confirm(`Hermes wants to ${label}.${reason}`);
+    const reason = action.reason ? `\n\nПричина: ${action.reason}` : "";
+    return window.confirm(`Hermes хочет выполнить действие: ${label}.${reason}`);
   }
 
   async function executeAction(action) {
@@ -895,8 +912,8 @@
       if (action.type === "navigate") {
         const url = String(action.value || action.target || "");
         if (!url) throw new Error("No URL provided.");
-        if (!confirmAction(cfg, action, `navigate to:\n${url}`)) {
-          throw new Error("User cancelled navigation.");
+        if (!confirmAction(cfg, action, `перейти по адресу:\n${url}`)) {
+          throw new Error("Пользователь отменил переход.");
         }
         location.href = url;
         await postJson("/v1/actions/result", {
@@ -904,21 +921,21 @@
           sessionId: cfg.sessionId || DEFAULT_SESSION,
           ok: true,
           status: "done",
-          message: "Navigation started."
+          message: "Переход начат."
         });
         return;
       }
 
       if (["back", "forward", "reload"].includes(action.type)) {
-        if (!confirmAction(cfg, action, action.type)) {
-          throw new Error(`User cancelled ${action.type}.`);
+        if (!confirmAction(cfg, action, actionNameRu(action.type))) {
+          throw new Error(`Пользователь отменил действие: ${actionNameRu(action.type)}.`);
         }
         await postJson("/v1/actions/result", {
           actionId,
           sessionId: cfg.sessionId || DEFAULT_SESSION,
           ok: true,
           status: "done",
-          message: `${action.type} started.`
+          message: `${actionNameRu(action.type)}: начато.`
         });
         if (action.type === "back") history.back();
         if (action.type === "forward") history.forward();
@@ -934,8 +951,8 @@
           sessionId: cfg.sessionId || DEFAULT_SESSION,
           ok: Boolean(focused && focused.ok),
           status: focused && focused.ok ? "done" : "failed",
-          message: focused && focused.ok ? "Tab focused." : "",
-          error: focused && focused.ok ? "" : String((focused && focused.error) || "Unable to focus tab.")
+          message: focused && focused.ok ? "Вкладка выведена на передний план." : "",
+          error: focused && focused.ok ? "" : String((focused && focused.error) || "Не удалось вывести вкладку на передний план.")
         });
         setTimeout(() => quiet(() => sendSnapshot(true)), 500);
         return;
@@ -961,14 +978,14 @@
           sessionId: cfg.sessionId || DEFAULT_SESSION,
           ok: true,
           status: "done",
-          message: "Auth snapshot refreshed."
+          message: "Снимок авторизации обновлён."
         });
         return;
       }
 
       const found = resolveElement(action.target || "");
       if (!found.el || found.score < 1) {
-        throw new Error(`Target not found: ${action.target || "(empty)"}`);
+        throw new Error(`Цель не найдена: ${action.target || "(пусто)"}`);
       }
       highlight(found.el);
 
@@ -978,14 +995,14 @@
           sessionId: cfg.sessionId || DEFAULT_SESSION,
           ok: true,
           status: "done",
-          message: "Element highlighted.",
+          message: "Элемент подсвечен.",
           element: { score: found.score, label: elementScoreText(found.el).slice(0, 300) }
         });
         return;
       }
 
-      if (!confirmAction(cfg, action, `${action.type}:\n${action.target || "(target)"}`)) {
-        throw new Error("User cancelled action.");
+      if (!confirmAction(cfg, action, `${actionNameRu(action.type)}:\n${action.target || "(цель)"}`)) {
+        throw new Error("Пользователь отменил действие.");
       }
 
       let ok = false;
@@ -995,13 +1012,13 @@
         found.el.click();
         ok = true;
       }
-      if (!ok) throw new Error(`Action failed: ${action.type}`);
+      if (!ok) throw new Error(`Не удалось выполнить действие: ${actionNameRu(action.type)}`);
       await postJson("/v1/actions/result", {
         actionId,
         sessionId: cfg.sessionId || DEFAULT_SESSION,
         ok: true,
         status: "done",
-        message: `${action.type} completed.`,
+        message: `${actionNameRu(action.type)}: выполнено.`,
         element: { score: found.score, label: elementScoreText(found.el).slice(0, 300) }
       });
       setTimeout(() => quiet(() => sendSnapshot(true)), 800);
