@@ -2,13 +2,15 @@
   const defaults = {
     gatewayUrl: "http://127.0.0.1:8765",
     sessionId: "default",
-    token: ""
+    token: "",
+    actionApprovalMode: "confirm"
   };
 
   const els = {
     gatewayUrl: document.getElementById("gatewayUrl"),
     sessionId: document.getElementById("sessionId"),
     token: document.getElementById("token"),
+    actionApprovalMode: document.getElementById("actionApprovalMode"),
     save: document.getElementById("save"),
     snapshot: document.getElementById("snapshot"),
     status: document.getElementById("status")
@@ -22,14 +24,16 @@
   els.gatewayUrl.value = stored.gatewayUrl || defaults.gatewayUrl;
   els.sessionId.value = stored.sessionId || defaults.sessionId;
   els.token.value = stored.token || "";
+  els.actionApprovalMode.value = stored.actionApprovalMode === "auto" ? "auto" : "confirm";
 
   els.save.addEventListener("click", async () => {
     await chrome.storage.local.set({
       gatewayUrl: els.gatewayUrl.value.trim() || defaults.gatewayUrl,
       sessionId: els.sessionId.value.trim() || defaults.sessionId,
-      token: els.token.value
+      token: els.token.value,
+      actionApprovalMode: els.actionApprovalMode.value === "auto" ? "auto" : "confirm"
     });
-    setStatus("Saved.");
+    setStatus(els.actionApprovalMode.value === "auto" ? "Saved. Auto actions enabled." : "Saved. Confirmation mode enabled.");
   });
 
   els.snapshot.addEventListener("click", async () => {
@@ -46,4 +50,3 @@
     }
   });
 })();
-

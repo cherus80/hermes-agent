@@ -53,7 +53,7 @@ def audit_path() -> Path:
 
 def _default_state() -> Dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "snapshots": {},
         "tabs": {},
         "actions": {},
@@ -133,16 +133,38 @@ def _safe_element(raw: Dict[str, Any]) -> Dict[str, Any]:
         "label",
         "name",
         "id",
+        "testId",
+        "ariaDescription",
+        "labelledBy",
+        "describedBy",
+        "autocomplete",
+        "inputMode",
         "selector",
         "href",
         "visible",
         "enabled",
+        "buttonLike",
+        "textEntry",
         "rect",
         "nearText",
         "hasValue",
     }
     out = {key: raw.get(key) for key in allowed if key in raw}
-    for key in ("text", "ariaLabel", "placeholder", "label", "name", "id", "nearText"):
+    for key in (
+        "text",
+        "ariaLabel",
+        "ariaDescription",
+        "labelledBy",
+        "describedBy",
+        "placeholder",
+        "label",
+        "name",
+        "id",
+        "testId",
+        "autocomplete",
+        "inputMode",
+        "nearText",
+    ):
         if key in out:
             out[key] = _trim_text(out.get(key), 300)
     if "href" in out:
@@ -162,6 +184,7 @@ def _safe_region(raw: Dict[str, Any]) -> Dict[str, Any]:
         "rect",
         "links",
         "numbers",
+        "controls",
     }
     out = {key: raw.get(key) for key in allowed if key in raw}
     for key in ("text", "ariaLabel", "label"):
@@ -185,6 +208,18 @@ def _safe_region(raw: Dict[str, Any]) -> Dict[str, Any]:
         out["numbers"] = [_trim_text(item, 100) for item in out["numbers"][:40]]
     else:
         out["numbers"] = []
+    if isinstance(out.get("controls"), list):
+        controls = []
+        for control in out["controls"][:24]:
+            if not isinstance(control, dict):
+                continue
+            safe_control = _safe_element(control)
+            safe_control.pop("nearText", None)
+            safe_control.pop("href", None)
+            controls.append(safe_control)
+        out["controls"] = controls
+    else:
+        out["controls"] = []
     return out
 
 
@@ -205,6 +240,7 @@ def normalize_snapshot(raw: Dict[str, Any]) -> Dict[str, Any]:
         "tabId": tab_id,
         "browserTab": browser_tab,
         "extensionVersion": _trim_text(raw.get("extensionVersion"), 100),
+        "operatorSettings": raw.get("operatorSettings") if isinstance(raw.get("operatorSettings"), dict) else {},
         "url": _trim_text(raw.get("url"), 2000),
         "title": _trim_text(raw.get("title"), 500),
         "text": _trim_text(raw.get("text"), MAX_TEXT_CHARS),

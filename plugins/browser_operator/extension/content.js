@@ -1,10 +1,11 @@
 (function () {
   const DEFAULT_GATEWAY = "http://127.0.0.1:8765";
   const DEFAULT_SESSION = "default";
-  const EXTENSION_VERSION = "0.3.0";
+  const EXTENSION_VERSION = "0.3.1";
   const MAX_TEXT = 20000;
   const MAX_ELEMENTS = 500;
   const MAX_REGIONS = 120;
+  const MAX_REGION_CONTROLS = 24;
   const INTERACTIVE_SELECTORS = [
     "a[href]",
     "button",
@@ -14,8 +15,25 @@
     "[role='button']",
     "[role='link']",
     "[role='textbox']",
+    "[role='searchbox']",
+    "[role='combobox']",
+    "[role='checkbox']",
+    "[role='radio']",
+    "[role='switch']",
+    "[role='menuitem']",
+    "[role='option']",
+    "[role='tab']",
     "[contenteditable='true']",
-    "[tabindex]"
+    "[contenteditable='plaintext-only']",
+    "[contenteditable='']",
+    "[tabindex]",
+    "[onclick]",
+    "[aria-label]",
+    "[aria-labelledby]",
+    "[data-testid]",
+    "[data-test-id]",
+    "[data-test]",
+    "[data-cy]"
   ];
   let lastSnapshotAt = 0;
   let mutationTimer = null;
@@ -26,7 +44,8 @@
   let cachedSettings = {
     gatewayUrl: DEFAULT_GATEWAY,
     sessionId: DEFAULT_SESSION,
-    token: ""
+    token: "",
+    actionApprovalMode: "confirm"
   };
   let extensionContextInvalidated = false;
 
@@ -157,20 +176,49 @@
     const selectorList = Array.isArray(selectors) ? selectors : String(selectors || "").split(",");
     const elements = [];
     const seen = new Set();
-    for (const rawSelector of selectorList) {
-      const selector = String(rawSelector || "").trim();
-      if (!selector) continue;
-      try {
-        for (const el of Array.from(queryRoot.querySelectorAll(selector) || [])) {
-          if (seen.has(el)) continue;
-          seen.add(el);
-          elements.push(el);
+    const roots = [queryRoot];
+    try {
+      const start = queryRoot.nodeType === Node.DOCUMENT_NODE ? document.documentElement : queryRoot;
+      if (start && typeof document.createTreeWalker === "function") {
+        const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
+        let node = walker.currentNode;
+        while (node && roots.length < 80) {
+          if (node.shadowRoot && typeof node.shadowRoot.querySelectorAll === "function") {
+            roots.push(node.shadowRoot);
+          }
+          node = walker.nextNode();
         }
-      } catch (_err) {
-        // Some pages patch or break DOM querying. Skip the bad selector and keep collecting.
+      }
+    } catch (_err) {
+      // Shadow DOM traversal is best-effort; ordinary DOM querying still works.
+    }
+    for (const searchRoot of roots) {
+      for (const rawSelector of selectorList) {
+        const selector = String(rawSelector || "").trim();
+        if (!selector) continue;
+        try {
+          for (const el of Array.from(searchRoot.querySelectorAll(selector) || [])) {
+            if (seen.has(el)) continue;
+            seen.add(el);
+            elements.push(el);
+          }
+        } catch (_err) {
+          // Some pages patch or break DOM querying. Skip the bad selector and keep collecting.
+        }
       }
     }
     return elements;
+  }
+
+  function querySelectorDeep(selector, root = document) {
+    for (const el of safeQuerySelectorAll(selector, root)) {
+      try {
+        if (visible(el)) return el;
+      } catch (_err) {
+        // Continue to the next deep candidate.
+      }
+    }
+    return null;
   }
 
   function safeAttr(el, name) {
@@ -187,6 +235,45 @@
     } catch (_err) {
       return null;
     }
+  }
+
+  function textByIdList(ids) {
+    const parts = [];
+    for (const id of String(ids || "").split(/\s+/).filter(Boolean)) {
+      try {
+        const node = document.getElementById(id);
+        const text = textOf(node, 220);
+        if (text) parts.push(text);
+      } catch (_err) {
+        // Ignore broken or transient aria references.
+      }
+    }
+    return parts.join(" ").trim();
+  }
+
+  function dataTestId(el) {
+    return (
+      safeAttr(el, "data-testid") ||
+      safeAttr(el, "data-test-id") ||
+      safeAttr(el, "data-test") ||
+      safeAttr(el, "data-cy")
+    );
+  }
+
+  function associatedLabelText(el) {
+    try {
+      const id = safeAttr(el, "id");
+      if (id) {
+        const labels = Array.from(document.querySelectorAll(`label[for="${cssString(id)}"]`) || []);
+        const text = labels.map((label) => textOf(label, 220)).filter(Boolean).join(" ");
+        if (text) return text;
+      }
+      const parentLabel = safeClosest(el, "label");
+      if (parentLabel) return textOf(parentLabel, 220);
+    } catch (_err) {
+      // Fall through to the caller's other label sources.
+    }
+    return "";
   }
 
   function cssEscape(value) {
@@ -222,12 +309,66 @@
   function elementLabel(el) {
     try {
       if (!el) return "";
-      const parentLabel = safeClosest(el, "label");
-      if (parentLabel) return textOf(parentLabel);
-      return safeAttr(el, "aria-label") || safeAttr(el, "title") || safeAttr(el, "aria-description") || "";
+      return [
+        associatedLabelText(el),
+        safeAttr(el, "aria-label"),
+        textByIdList(safeAttr(el, "aria-labelledby")),
+        safeAttr(el, "title"),
+        safeAttr(el, "aria-description"),
+        textByIdList(safeAttr(el, "aria-describedby")),
+        safeAttr(el, "alt"),
+        dataTestId(el)
+      ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     } catch (_err) {
       return "";
     }
+  }
+
+  function isButtonLike(el) {
+    const tag = el && el.tagName ? el.tagName.toLowerCase() : "";
+    const role = safeAttr(el, "role").toLowerCase();
+    const type = safeAttr(el, "type").toLowerCase();
+    return (
+      tag === "button" ||
+      tag === "a" ||
+      ["button", "link", "menuitem", "option", "tab", "switch", "checkbox", "radio"].includes(role) ||
+      ["button", "submit", "reset", "image"].includes(type) ||
+      Boolean(safeAttr(el, "onclick"))
+    );
+  }
+
+  function isTextEntry(el) {
+    const tag = el && el.tagName ? el.tagName.toLowerCase() : "";
+    const role = safeAttr(el, "role").toLowerCase();
+    const type = safeAttr(el, "type").toLowerCase();
+    return (
+      tag === "textarea" ||
+      tag === "select" ||
+      el.isContentEditable ||
+      ["textbox", "searchbox", "combobox"].includes(role) ||
+      (tag === "input" && !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "image"].includes(type))
+    );
+  }
+
+  function isDisabled(el) {
+    try {
+      return Boolean(el.disabled) || safeAttr(el, "aria-disabled").toLowerCase() === "true";
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  function buttonValueText(el) {
+    const tag = el && el.tagName ? el.tagName.toLowerCase() : "";
+    const type = safeAttr(el, "type").toLowerCase();
+    try {
+      if (tag === "input" && ["button", "submit", "reset"].includes(type)) {
+        return String(el.value || "").slice(0, 220);
+      }
+    } catch (_err) {
+      return "";
+    }
+    return "";
   }
 
   function stableSelector(el) {
@@ -235,6 +376,10 @@
       if (!el || !(el instanceof Element)) return "";
       const id = safeAttr(el, "id");
       if (id) return `#${cssEscape(id)}`;
+      for (const attr of ["data-testid", "data-test-id", "data-test", "data-cy"]) {
+        const testId = safeAttr(el, attr);
+        if (testId) return `${el.tagName.toLowerCase()}[${attr}="${cssString(testId)}"]`;
+      }
       const aria = safeAttr(el, "aria-label");
       if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssString(aria)}"]`;
       const name = safeAttr(el, "name");
@@ -263,11 +408,49 @@
 
   function nearText(el) {
     try {
-      const parent = safeClosest(el, "section, article, form, div, li") || el.parentElement;
-      return textOf(parent, 250);
+      const parent = safeClosest(el, "section, article, form, [role='dialog'], [role='group'], [role='listitem'], div, li") || el.parentElement;
+      const before = el.previousElementSibling ? textOf(el.previousElementSibling, 120) : "";
+      const after = el.nextElementSibling ? textOf(el.nextElementSibling, 120) : "";
+      return [before, textOf(parent, 360), after].filter(Boolean).join(" ").slice(0, 500);
     } catch (_err) {
       return "";
     }
+  }
+
+  function elementSummary(el, ref = "") {
+    const type = safeAttr(el, "type").toLowerCase();
+    const isPassword = type === "password";
+    const text = isPassword ? "" : textOf(el);
+    const label = isPassword ? "" : elementLabel(el);
+    const role = safeAttr(el, "role");
+    const tag = el.tagName.toLowerCase();
+    return {
+      ref,
+      tag,
+      role,
+      type,
+      text: text || buttonValueText(el),
+      ariaLabel: isPassword ? "" : safeAttr(el, "aria-label"),
+      ariaDescription: isPassword ? "" : safeAttr(el, "aria-description"),
+      labelledBy: isPassword ? "" : textByIdList(safeAttr(el, "aria-labelledby")),
+      describedBy: isPassword ? "" : textByIdList(safeAttr(el, "aria-describedby")),
+      placeholder: isPassword ? "" : safeAttr(el, "placeholder"),
+      label,
+      name: safeAttr(el, "name"),
+      id: safeAttr(el, "id"),
+      testId: dataTestId(el),
+      autocomplete: isPassword ? "" : safeAttr(el, "autocomplete"),
+      inputMode: isPassword ? "" : safeAttr(el, "inputmode"),
+      selector: stableSelector(el),
+      href: el instanceof HTMLAnchorElement ? el.href : "",
+      visible: true,
+      enabled: !isDisabled(el),
+      buttonLike: isButtonLike(el),
+      textEntry: isTextEntry(el),
+      rect: safeRect(el),
+      nearText: isPassword ? "" : nearText(el),
+      hasValue: !isPassword && "value" in el ? Boolean(el.value) : undefined
+    };
   }
 
   function collectElements() {
@@ -280,27 +463,7 @@
         seen.add(el);
         const rect = safeRect(el);
         if (rect.width <= 0 || rect.height <= 0) continue;
-        const type = safeAttr(el, "type").toLowerCase();
-        const isPassword = type === "password";
-        elements.push({
-          ref: `e${elements.length + 1}`,
-          tag: el.tagName.toLowerCase(),
-          role: safeAttr(el, "role"),
-          type,
-          text: isPassword ? "" : textOf(el),
-          ariaLabel: safeAttr(el, "aria-label"),
-          placeholder: isPassword ? "" : safeAttr(el, "placeholder"),
-          label: isPassword ? "" : elementLabel(el),
-          name: safeAttr(el, "name"),
-          id: safeAttr(el, "id"),
-          selector: stableSelector(el),
-          href: el instanceof HTMLAnchorElement ? el.href : "",
-          visible: true,
-          enabled: !el.disabled,
-          rect,
-          nearText: isPassword ? "" : nearText(el),
-          hasValue: !isPassword && "value" in el ? Boolean(el.value) : undefined
-        });
+        elements.push(elementSummary(el, `e${elements.length + 1}`));
       } catch (_err) {
         // One hostile or transient element should not prevent the page snapshot.
       }
@@ -330,12 +493,49 @@
     return Array.from(new Set(matches.map((item) => item.trim()).filter(Boolean))).slice(0, 40);
   }
 
+  function collectRegionControls(root) {
+    const controls = [];
+    const seen = new Set();
+    for (const el of safeQuerySelectorAll(INTERACTIVE_SELECTORS, root)) {
+      if (controls.length >= MAX_REGION_CONTROLS) break;
+      try {
+        if (seen.has(el) || !visible(el)) continue;
+        seen.add(el);
+        const item = elementSummary(el, `c${controls.length + 1}`);
+        controls.push({
+          ref: item.ref,
+          tag: item.tag,
+          role: item.role,
+          type: item.type,
+          text: item.text,
+          label: item.label,
+          ariaLabel: item.ariaLabel,
+          placeholder: item.placeholder,
+          testId: item.testId,
+          selector: item.selector,
+          buttonLike: item.buttonLike,
+          textEntry: item.textEntry,
+          enabled: item.enabled,
+          rect: item.rect
+        });
+      } catch (_err) {
+        // Ignore controls that disappear during SPA re-render.
+      }
+    }
+    return controls;
+  }
+
   function collectRegions() {
     const selectors = [
       "article",
       "[role='article']",
       "[data-testid='cellInnerDiv']",
       "[data-pressable-container='true']",
+      "form",
+      "[role='dialog']",
+      "[role='menu']",
+      "[role='listbox']",
+      "[role='feed'] > *",
       "section",
       "li"
     ];
@@ -361,7 +561,8 @@
           label: elementLabel(el),
           rect,
           links: collectLinks(el),
-          numbers: collectNumbers(text)
+          numbers: collectNumbers(text),
+          controls: collectRegionControls(el)
         });
       } catch (_err) {
         // Keep the snapshot alive even on highly dynamic feeds.
@@ -407,6 +608,7 @@
     try {
       const cfg = await chrome.storage.local.get(cachedSettings);
       cachedSettings = { ...cachedSettings, ...cfg };
+      cachedSettings.actionApprovalMode = cachedSettings.actionApprovalMode === "auto" ? "auto" : "confirm";
     } catch (err) {
       handleAsyncError(err);
     }
@@ -452,6 +654,9 @@
         tabId: currentTab.tabId || fallbackPageTabId(),
         browserTab: currentTab,
         extensionVersion: EXTENSION_VERSION,
+        operatorSettings: {
+          actionApprovalMode: cfg.actionApprovalMode === "auto" ? "auto" : "confirm"
+        },
         url: location.href,
         title: document.title,
         text: visibleText(),
@@ -485,8 +690,15 @@
         safeAttr(el, "aria-label"),
         safeAttr(el, "placeholder"),
         elementLabel(el),
+        textByIdList(safeAttr(el, "aria-labelledby")),
+        textByIdList(safeAttr(el, "aria-describedby")),
         safeAttr(el, "name"),
         safeAttr(el, "id"),
+        safeAttr(el, "role"),
+        safeAttr(el, "type"),
+        safeAttr(el, "autocomplete"),
+        dataTestId(el),
+        buttonValueText(el),
         nearText(el)
       ].join(" ").toLowerCase();
     } catch (_err) {
@@ -494,25 +706,85 @@
     }
   }
 
+  function targetWords(target) {
+    const base = String(target || "").toLowerCase();
+    const words = base.match(/[\p{L}\p{N}_-]+/gu) || [];
+    const synonyms = {
+      "комментарий": ["comment", "reply", "ответ", "textbox", "textarea", "editor"],
+      "коммент": ["comment", "reply", "ответ", "textbox", "textarea", "editor"],
+      "comment": ["комментарий", "reply", "ответ", "textbox", "textarea", "editor"],
+      "ответ": ["reply", "comment", "комментарий", "textbox", "textarea", "editor"],
+      "поле": ["input", "field", "textbox", "textarea", "editor"],
+      "field": ["поле", "input", "textbox", "textarea", "editor"],
+      "кнопка": ["button", "submit", "click"],
+      "button": ["кнопка", "submit", "click"],
+      "опубликовать": ["publish", "post", "submit", "share", "отправить", "разместить"],
+      "публикация": ["publish", "post", "submit", "share", "отправить", "разместить"],
+      "publish": ["опубликовать", "post", "submit", "share", "отправить"],
+      "send": ["отправить", "submit", "publish", "post"],
+      "отправить": ["send", "submit", "publish", "post"],
+      "поиск": ["search", "find"],
+      "search": ["поиск", "find"],
+      "название": ["title", "name"],
+      "title": ["название", "name"],
+      "описание": ["description", "caption", "bio"],
+      "description": ["описание", "caption"],
+      "загрузить": ["upload", "file", "attach"],
+      "upload": ["загрузить", "file", "attach"]
+    };
+    const expanded = new Set(words);
+    for (const word of words) {
+      for (const synonym of synonyms[word] || []) expanded.add(synonym);
+    }
+    return Array.from(expanded);
+  }
+
   function scoreElement(el, target) {
     const label = elementScoreText(el);
-    const words = String(target || "").toLowerCase().match(/[\w-]+/g) || [];
+    const targetText = String(target || "").toLowerCase();
+    const words = targetWords(target);
     let score = 0;
-    if (target && label.includes(String(target).toLowerCase())) score += 4;
+    if (target && label.includes(targetText)) score += 4;
     for (const word of words) {
       if (word.length > 1 && label.includes(word)) score += 1;
     }
     if (!visible(el)) score -= 3;
-    if (el.disabled) score -= 1;
-    const tag = el.tagName.toLowerCase();
-    const role = (el.getAttribute("role") || "").toLowerCase();
-    if (["button", "a", "input", "textarea", "select"].includes(tag) || ["button", "link", "textbox"].includes(role)) {
+    if (isDisabled(el)) score -= 1;
+    if (isButtonLike(el) || isTextEntry(el)) {
       score += 0.25;
+    }
+    if (/(comment|reply|коммент|ответ|field|поле|text|текст|title|название|description|описание|search|поиск)/i.test(targetText) && isTextEntry(el)) {
+      score += 2.0;
+    }
+    if (/(button|кнопка|click|нажми|publish|post|submit|send|share|опубликов|отправ|размест|save|сохран)/i.test(targetText) && isButtonLike(el)) {
+      score += 2.0;
+    }
+    if (/(upload|file|attach|загруз|файл|прикреп)/i.test(targetText) && safeAttr(el, "type").toLowerCase() === "file") {
+      score += 3.0;
     }
     return score;
   }
 
+  function selectorFromTarget(target) {
+    const raw = String(target || "").trim();
+    const prefixed = raw.match(/^(?:css|selector)\s*[:=]\s*(.+)$/i);
+    if (prefixed) return prefixed[1].trim();
+    if (/^(#[\w-]+|\.[\w-]+|[a-z][\w-]*(?:[#.\[]|$)|\[[^\]]+\])/.test(raw)) {
+      return raw;
+    }
+    return "";
+  }
+
   function resolveElement(target) {
+    const selector = selectorFromTarget(target);
+    if (selector) {
+      try {
+        const el = querySelectorDeep(selector);
+        if (el && visible(el)) return { el, score: 100 };
+      } catch (_err) {
+        // If the target only looked like a selector, fall back to semantic scoring.
+      }
+    }
     let best = null;
     let bestScore = 0;
     for (const el of safeQuerySelectorAll(INTERACTIVE_SELECTORS)) {
@@ -601,9 +873,19 @@
     return `Scrolled ${direction} by ${Math.round(pixels)}px.`;
   }
 
-  function confirmNavigation(action, label) {
-    if (!action.requiresUserConfirm) return true;
-    return window.confirm(`Hermes wants to ${label}.\n\n${action.reason || ""}`);
+  function actionApprovalMode(cfg) {
+    return cfg && cfg.actionApprovalMode === "auto" ? "auto" : "confirm";
+  }
+
+  function isConfirmableAction(action) {
+    return ["click", "fill", "select", "navigate", "back", "forward", "reload"].includes(String(action && action.type || ""));
+  }
+
+  function confirmAction(cfg, action, label) {
+    if (actionApprovalMode(cfg) === "auto") return true;
+    if (!isConfirmableAction(action)) return true;
+    const reason = action.reason ? `\n\nReason: ${action.reason}` : "";
+    return window.confirm(`Hermes wants to ${label}.${reason}`);
   }
 
   async function executeAction(action) {
@@ -613,7 +895,7 @@
       if (action.type === "navigate") {
         const url = String(action.value || action.target || "");
         if (!url) throw new Error("No URL provided.");
-        if (!confirmNavigation(action, `navigate to:\n${url}`)) {
+        if (!confirmAction(cfg, action, `navigate to:\n${url}`)) {
           throw new Error("User cancelled navigation.");
         }
         location.href = url;
@@ -628,7 +910,7 @@
       }
 
       if (["back", "forward", "reload"].includes(action.type)) {
-        if (!confirmNavigation(action, action.type)) {
+        if (!confirmAction(cfg, action, action.type)) {
           throw new Error(`User cancelled ${action.type}.`);
         }
         await postJson("/v1/actions/result", {
@@ -702,11 +984,8 @@
         return;
       }
 
-      if (action.requiresUserConfirm) {
-        const ok = window.confirm(
-          `Hermes wants to ${action.type}:\n${action.target || "(target)"}\n\n${action.reason || ""}`
-        );
-        if (!ok) throw new Error("User cancelled action.");
+      if (!confirmAction(cfg, action, `${action.type}:\n${action.target || "(target)"}`)) {
+        throw new Error("User cancelled action.");
       }
 
       let ok = false;

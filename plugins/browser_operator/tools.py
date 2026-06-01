@@ -100,7 +100,8 @@ BROWSER_OPERATOR_FIND_ELEMENTS_SCHEMA: Dict[str, Any] = {
     "description": (
         "Find likely visible page elements for a natural-language target such "
         "as 'comment field', 'publish button', or 'account menu'. Returns "
-        "ranked candidates from the latest extension snapshot."
+        "ranked candidates from the latest extension snapshot, including stable "
+        "selectors when available."
     ),
     "parameters": {
         "type": "object",
@@ -144,7 +145,7 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
             },
             "target": {
                 "type": "string",
-                "description": "Natural-language target, e.g. 'title field' or 'publish button'.",
+                "description": "Natural-language target, e.g. 'title field' or 'publish button'. You may also pass selector:<css> or css=<css> from a candidate selector.",
             },
             "value": {
                 "type": "string",
@@ -160,7 +161,9 @@ BROWSER_OPERATOR_QUEUE_ACTION_SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": (
                     "Whether the extension must ask before running. Defaults "
-                    "to true for click/navigate and false for highlight/fill/select."
+                    "to true for click/navigate and false for highlight/fill/select. "
+                    "The user's extension approval-mode setting can still force "
+                    "confirmation or allow auto-run."
                 ),
             },
         },

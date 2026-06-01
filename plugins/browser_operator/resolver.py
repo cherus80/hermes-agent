@@ -13,16 +13,56 @@ def _words(text: str) -> List[str]:
     return [w.lower() for w in _WORD_RE.findall(text or "") if len(w) > 1]
 
 
+_SYNONYMS = {
+    "комментарий": ["comment", "reply", "ответ", "textbox", "textarea", "editor"],
+    "коммент": ["comment", "reply", "ответ", "textbox", "textarea", "editor"],
+    "comment": ["комментарий", "reply", "ответ", "textbox", "textarea", "editor"],
+    "ответ": ["reply", "comment", "комментарий", "textbox", "textarea", "editor"],
+    "поле": ["input", "field", "textbox", "textarea", "editor"],
+    "field": ["поле", "input", "textbox", "textarea", "editor"],
+    "кнопка": ["button", "submit", "click"],
+    "button": ["кнопка", "submit", "click"],
+    "опубликовать": ["publish", "post", "submit", "share", "отправить", "разместить"],
+    "публикация": ["publish", "post", "submit", "share", "отправить", "разместить"],
+    "publish": ["опубликовать", "post", "submit", "share", "отправить"],
+    "send": ["отправить", "submit", "publish", "post"],
+    "отправить": ["send", "submit", "publish", "post"],
+    "поиск": ["search", "find"],
+    "search": ["поиск", "find"],
+    "название": ["title", "name"],
+    "title": ["название", "name"],
+    "описание": ["description", "caption", "bio"],
+    "description": ["описание", "caption"],
+    "загрузить": ["upload", "file", "attach"],
+    "upload": ["загрузить", "file", "attach"],
+}
+
+
+def _expanded_words(text: str) -> List[str]:
+    words = set(_words(text))
+    for word in list(words):
+        words.update(_SYNONYMS.get(word, []))
+    return sorted(words)
+
+
 def element_label(element: Dict[str, Any]) -> str:
     parts = [
         element.get("text"),
         element.get("ariaLabel"),
         element.get("placeholder"),
         element.get("label"),
+        element.get("ariaDescription"),
+        element.get("labelledBy"),
+        element.get("describedBy"),
         element.get("name"),
         element.get("id"),
+        element.get("testId"),
+        element.get("autocomplete"),
+        element.get("inputMode"),
         element.get("role"),
         element.get("type"),
+        "button" if element.get("buttonLike") else "",
+        "textbox" if element.get("textEntry") else "",
         element.get("nearText"),
     ]
     return " ".join(str(part) for part in parts if part)
@@ -30,7 +70,7 @@ def element_label(element: Dict[str, Any]) -> str:
 
 def score_element(element: Dict[str, Any], target: str) -> float:
     label = element_label(element).lower()
-    target_words = _words(target)
+    target_words = _expanded_words(target)
     if not target_words:
         return 0.0
 
@@ -46,8 +86,16 @@ def score_element(element: Dict[str, Any], target: str) -> float:
         score -= 1.0
     tag = str(element.get("tag") or "").lower()
     role = str(element.get("role") or "").lower()
-    if tag in {"button", "input", "textarea", "select", "a"} or role in {"button", "link", "textbox"}:
+    button_like = bool(element.get("buttonLike")) or tag in {"button", "a"} or role in {"button", "link", "menuitem", "option", "tab", "switch", "checkbox", "radio"}
+    text_entry = bool(element.get("textEntry")) or tag in {"input", "textarea", "select"} or role in {"textbox", "searchbox", "combobox"}
+    if button_like or text_entry:
         score += 0.25
+    if re.search(r"comment|reply|коммент|ответ|field|поле|text|текст|title|название|description|описание|search|поиск", target, re.I) and text_entry:
+        score += 2.0
+    if re.search(r"button|кнопка|click|нажми|publish|post|submit|send|share|опубликов|отправ|размест|save|сохран", target, re.I) and button_like:
+        score += 2.0
+    if re.search(r"upload|file|attach|загруз|файл|прикреп", target, re.I) and str(element.get("type") or "").lower() == "file":
+        score += 3.0
     return max(score, 0.0)
 
 
@@ -88,9 +136,11 @@ def summarize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "text": (region.get("text") or "")[:700],
                 "links": region.get("links") or [],
                 "numbers": region.get("numbers") or [],
+                "controls": region.get("controls") or [],
             }
             for region in regions[:12]
             if isinstance(region, dict)
         ],
+        "operatorSettings": snapshot.get("operatorSettings") or {},
         "authSignals": snapshot.get("authSignals") or {},
     }

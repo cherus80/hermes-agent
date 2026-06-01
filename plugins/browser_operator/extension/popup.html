@@ -42,6 +42,15 @@
         border-radius: 6px;
         background: white;
       }
+      select {
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 4px;
+        padding: 8px;
+        border: 1px solid #c8ced8;
+        border-radius: 6px;
+        background: white;
+      }
       button {
         margin-top: 12px;
         padding: 8px 10px;
@@ -88,13 +97,22 @@
     <label for="token">Token</label>
     <input id="token" type="password" placeholder="optional" />
 
+    <label for="actionApprovalMode">Action approval mode</label>
+    <select id="actionApprovalMode">
+      <option value="confirm">Ask before page actions</option>
+      <option value="auto">Allow actions without prompts</option>
+    </select>
+
     <div class="row">
       <button id="save">Save</button>
       <button id="snapshot" class="secondary">Send snapshot</button>
     </div>
 
     <div id="status"></div>
-    <div class="hint">Use the current browser login session. Hermes will ask before risky clicks.</div>
+    <div class="hint">
+      Use your current browser login session. Safe mode asks before clicks,
+      form changes, and navigation; auto mode runs queued actions immediately.
+    </div>
 
     <script src="popup.js"></script>
   </body>

@@ -11,6 +11,11 @@ Use this skill when the user wants Hermes to help with a live web page through t
 
 The Chrome extension is the page-side companion. It sends visible page snapshots to the Browser Operator bridge and polls for queued actions. Each open tab is tracked by a stable `tab_id` such as `chrome-tab:123`, so Hermes can keep working with the intended page even if the user switches browser tabs. Hermes tools read the latest snapshot, reason about the page, queue a small action for a specific tab, then inspect the result.
 
+The extension has an approval-mode switch in its popup:
+
+- `Ask before page actions`: the safe default. The extension asks before click/fill/select/navigation actions.
+- `Allow actions without prompts`: executes queued page actions immediately. Use only when the user explicitly enables it for a trusted workflow.
+
 Default startup:
 
 ```bash
@@ -28,7 +33,7 @@ hermes browser-operator extension-path
 
 - Do not bypass CAPTCHA, 2FA, paywalls, anti-bot systems, bank/payment flows, or site restrictions.
 - Treat send, publish, delete, purchase, settings changes, and account changes as high-risk actions.
-- For high-risk actions, queue only a user-confirmed action and explain what will happen.
+- For high-risk actions, queue only a user-confirmed action and explain what will happen unless the user has explicitly enabled auto-run in the extension.
 - Prefer draft mode: fill text and stop before final submit/publish.
 - Do not request or reveal passwords, cookies, access tokens, refresh tokens, or session secrets.
 - Use the user's existing browser session as the primary auth method.
@@ -42,20 +47,20 @@ hermes browser-operator extension-path
 4. Call `browser_operator_find_elements` with a semantic target such as `comment field`, `title input`, `publish button`, or `account menu`.
 5. If content is below or above the viewport, call `browser_operator_scroll_page` with the same `tab_id`.
 6. For browser history or URL navigation, call `browser_operator_navigate_page` with the same `tab_id`.
-7. If the target is clear, call `browser_operator_queue_action` with the same `tab_id`.
+7. If the target is clear, call `browser_operator_queue_action` with the same `tab_id`. When a candidate has a strong `selector`, pass `target` as `selector:<css selector>` for exact targeting.
 8. Poll `browser_operator_action_result` for the returned action id.
 9. Re-read `browser_operator_latest_snapshot` after scrolling, navigation, or form changes.
 
-Snapshots include `regions`, which are larger page/card/article chunks. Use them to verify feed posts, Threads items, YouTube Studio rows, or other content where individual buttons do not carry enough context.
+Snapshots include `regions`, which are larger page/card/article chunks. Region previews include nearby `controls`, links, and numbers. Use them to verify feed posts, Threads items, YouTube Studio rows, or other content where individual buttons do not carry enough context.
 
 ## Action guidance
 
 - `highlight`: safe first step when confidence is low.
 - `scroll`: use `browser_operator_scroll_page` for page movement; no confirmation needed.
-- `fill`: acceptable for drafts and form fields.
-- `select`: acceptable for dropdown choices.
-- `click`: requires confirmation for risky buttons.
-- `navigate`: use `browser_operator_navigate_page`; URL changes require confirmation by default.
+- `fill`: acceptable for drafts and form fields. In safe mode the extension asks before changing the page.
+- `select`: acceptable for dropdown choices. In safe mode the extension asks before changing the page.
+- `click`: in safe mode the extension asks before clicking.
+- `navigate`: use `browser_operator_navigate_page`; in safe mode the extension asks before navigation.
 - `back`, `forward`, `reload`: use `browser_operator_navigate_page` for browser navigation controls.
 - `auth_probe`: use when you need the extension to refresh login/account signals.
 - `focus_tab`: use through `browser_operator_queue_action` when the correct tab should be brought to the front.
