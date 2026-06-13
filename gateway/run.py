@@ -4229,8 +4229,18 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider/--global flags. Newer Hermes builds also return a
+        # force-refresh flag; keep this gateway compatible with both shapes.
+        parsed_flags = parse_model_flags(raw_args)
+        model_input, explicit_provider, persist_global = parsed_flags[:3]
+        force_refresh = bool(parsed_flags[3]) if len(parsed_flags) > 3 else False
+
+        if force_refresh:
+            try:
+                from hermes_cli.models import clear_provider_models_cache
+                clear_provider_models_cache()
+            except Exception as exc:
+                logger.debug("Model cache refresh skipped: %s", exc)
 
         # Read current model/provider from config
         current_model = ""

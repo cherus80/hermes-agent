@@ -61,3 +61,35 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_accepts_new_refresh_flag_tuple(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    import gateway.run as gateway_run
+
+    cache_refresh_calls = []
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.parse_model_flags",
+        lambda raw_args: ("", "", False, True),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.clear_provider_models_cache",
+        lambda: cache_refresh_calls.append(True),
+        raising=False,
+    )
+
+    result = await _make_runner()._handle_model_command(_make_event())
+
+    assert cache_refresh_calls == [True]
+    assert result is not None
+    assert "`/model <name>`" in result
