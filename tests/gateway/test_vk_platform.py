@@ -6,7 +6,7 @@ from gateway.platforms.vk import VKAdapter
 
 
 @pytest.mark.asyncio
-async def test_vk_poll_once_routes_unread_message_to_gateway(tmp_path):
+async def test_vk_poll_once_routes_recent_message_to_gateway(tmp_path):
     adapter = VKAdapter(PlatformConfig(enabled=True, token="vk-token"))
     adapter.state_path = tmp_path / "vk_state.json"
     adapter._seen_ids = set()
@@ -50,6 +50,10 @@ async def test_vk_poll_once_routes_unread_message_to_gateway(tmp_path):
     assert event.source.platform == Platform.VK
     assert event.source.chat_id == "123456789"
     assert event.source.user_id == "987654321"
+    assert (
+        "messages.getConversations",
+        {"count": str(adapter.batch_size), "filter": "all"},
+    ) in api_calls
     assert ("messages.markAsRead", {"peer_id": "123456789"}) in api_calls
 
 

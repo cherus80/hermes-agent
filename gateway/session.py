@@ -83,6 +83,11 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    is_bot: bool = False
+    guild_id: Optional[str] = None  # Discord guild/server ID
+    parent_chat_id: Optional[str] = None  # Parent channel for thread-like chats
+    message_id: Optional[str] = None
+    role_authorized: bool = False
     
     @property
     def description(self) -> str:
@@ -120,6 +125,16 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
+        if self.is_bot:
+            d["is_bot"] = self.is_bot
+        if self.guild_id:
+            d["guild_id"] = self.guild_id
+        if self.parent_chat_id:
+            d["parent_chat_id"] = self.parent_chat_id
+        if self.message_id:
+            d["message_id"] = self.message_id
+        if self.role_authorized:
+            d["role_authorized"] = self.role_authorized
         return d
     
     @classmethod
@@ -135,6 +150,11 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            is_bot=bool(data.get("is_bot", False)),
+            guild_id=data.get("guild_id"),
+            parent_chat_id=data.get("parent_chat_id"),
+            message_id=data.get("message_id"),
+            role_authorized=bool(data.get("role_authorized", False)),
         )
     
 

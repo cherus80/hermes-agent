@@ -1,8 +1,8 @@
 """VK polling platform adapter for Hermes Gateway.
 
-The adapter follows the standalone hermes-vk-bridge approach: it polls unread
-community messages with ``messages.getConversations(filter=unread)`` and routes
-them through the normal Hermes Gateway pipeline.
+The adapter follows the standalone hermes-vk-bridge approach: it polls
+community dialogs with ``messages.getConversations`` and routes new inbound
+messages through the normal Hermes Gateway pipeline.
 """
 
 from __future__ import annotations
@@ -253,6 +253,13 @@ class VKAdapter(BasePlatformAdapter):
             or os.getenv("VK_POLL_INTERVAL")
             or DEFAULT_POLL_INTERVAL_SECONDS
         )
+        self.poll_filter = str(
+            config.extra.get("poll_filter")
+            or os.getenv("VK_POLL_FILTER")
+            or "all"
+        ).strip().lower()
+        if self.poll_filter not in {"all", "unread", "important", "unanswered"}:
+            self.poll_filter = "all"
         self.batch_size = int(config.extra.get("batch_size") or os.getenv("VK_POLL_BATCH_SIZE", "20"))
         self.state_path = Path(
             os.getenv("VK_GATEWAY_STATE_PATH")
@@ -290,7 +297,11 @@ class VKAdapter(BasePlatformAdapter):
             return False
         self._mark_connected()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="vk-poll-loop")
-        logger.info("[VK] adapter connected (poll_interval=%.1fs)", self.poll_interval)
+        logger.info(
+            "[VK] adapter connected (poll_interval=%.1fs filter=%s)",
+            self.poll_interval,
+            self.poll_filter,
+        )
         return True
 
     async def disconnect(self) -> None:
@@ -322,7 +333,7 @@ class VKAdapter(BasePlatformAdapter):
     async def _poll_once(self) -> None:
         resp = await self._vk_api(
             "messages.getConversations",
-            {"count": str(self.batch_size), "filter": "unread"},
+            {"count": str(self.batch_size), "filter": self.poll_filter},
         )
         for item in (resp or {}).get("items", []):
             msg = item.get("last_message") or {}
