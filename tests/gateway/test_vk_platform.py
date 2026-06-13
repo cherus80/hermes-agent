@@ -210,7 +210,7 @@ async def test_vk_send_attaches_command_keyboard():
 
 
 @pytest.mark.asyncio
-async def test_vk_send_exec_approval_uses_inline_keyboard():
+async def test_vk_send_exec_approval_uses_command_keyboard():
     adapter = VKAdapter(PlatformConfig(enabled=True, token="vk-token"))
     calls = []
 
@@ -232,7 +232,7 @@ async def test_vk_send_exec_approval_uses_inline_keyboard():
     assert method == "messages.send"
     assert "Нужно подтверждение" in payload["message"]
     keyboard = json.loads(payload["keyboard"])
-    assert keyboard["inline"] is True
+    assert keyboard["inline"] is False
     commands = [
         json.loads(button["action"]["payload"])["command"]
         for row in keyboard["buttons"]

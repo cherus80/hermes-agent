@@ -70,10 +70,15 @@ def _vk_text_button(label: str, command: str, color: str = "secondary") -> dict[
     }
 
 
-def _vk_keyboard(rows: list[list[tuple[str, str, str]]], *, inline: bool = False) -> str:
+def _vk_keyboard(
+    rows: list[list[tuple[str, str, str]]],
+    *,
+    inline: bool = False,
+    one_time: bool = False,
+) -> str:
     return json.dumps(
         {
-            "one_time": False,
+            "one_time": one_time,
             "inline": inline,
             "buttons": [
                 [_vk_text_button(label, command, color) for label, command, color in row]
@@ -480,7 +485,7 @@ class VKAdapter(BasePlatformAdapter):
                     ("Отклонить", "/deny", "negative"),
                 ],
             ],
-            inline=True,
+            one_time=False,
         )
 
     async def _collect_attachments(self, msg: dict[str, Any]) -> tuple[list[str], list[str], MessageType]:
@@ -571,10 +576,10 @@ class VKAdapter(BasePlatformAdapter):
 
         try:
             return await self._vk_api("messages.send", payload)
-        except Exception:
+        except Exception as exc:
             if not keyboard:
                 raise
-            logger.debug("[VK] send with keyboard failed; retrying without keyboard", exc_info=True)
+            logger.warning("[VK] send with keyboard failed; retrying without keyboard: %s", exc)
             payload.pop("keyboard", None)
             return await self._vk_api("messages.send", payload)
 
