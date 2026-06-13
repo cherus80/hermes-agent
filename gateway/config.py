@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    VK = "vk"
 
 
 @dataclass
@@ -282,6 +283,9 @@ class GatewayConfig:
                 connected.append(platform)
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
+                connected.append(platform)
+            # VK can also be configured with platforms.vk.extra.token
+            elif platform == Platform.VK and config.extra.get("token"):
                 connected.append(platform)
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
@@ -684,6 +688,7 @@ def load_gateway_config() -> GatewayConfig:
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+        Platform.VK: "VK_GROUP_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
@@ -704,8 +709,31 @@ def load_gateway_config() -> GatewayConfig:
     return config
 
 
+def _load_vk_bridge_env() -> None:
+    """Load the standalone bridge env file for VK gateway compatibility."""
+    env_path = Path(
+        os.getenv("VK_ENV_PATH")
+        or str(get_hermes_home() / "scripts" / "vk_bridge.env")
+    ).expanduser()
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception as e:
+        logger.warning("Failed to load VK bridge env file %s: %s", env_path, e)
+
+
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+    _load_vk_bridge_env()
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -736,6 +764,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.TELEGRAM,
             chat_id=telegram_home,
             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # VKontakte community messages
+    vk_token = os.getenv("VK_GROUP_TOKEN")
+    if vk_token:
+        if Platform.VK not in config.platforms:
+            config.platforms[Platform.VK] = PlatformConfig()
+        config.platforms[Platform.VK].enabled = True
+        config.platforms[Platform.VK].token = vk_token
+    vk_poll_interval = os.getenv("VK_POLL_INTERVAL")
+    if vk_poll_interval and Platform.VK in config.platforms:
+        config.platforms[Platform.VK].extra["poll_interval"] = vk_poll_interval
+    vk_home = os.getenv("VK_HOME_CHANNEL")
+    if vk_home and Platform.VK in config.platforms:
+        config.platforms[Platform.VK].home_channel = HomeChannel(
+            platform=Platform.VK,
+            chat_id=vk_home,
+            name=os.getenv("VK_HOME_CHANNEL_NAME", "Home"),
         )
     
     # Discord

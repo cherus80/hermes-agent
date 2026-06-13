@@ -1446,6 +1446,7 @@ class GatewayRunner:
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+                       "VK_ALLOWED_USERS",
                        "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
@@ -1460,6 +1461,7 @@ class GatewayRunner:
             os.getenv(v, "").lower() in ("true", "1", "yes")
             for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
                        "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+                       "VK_ALLOW_ALL_USERS",
                        "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
@@ -2060,6 +2062,13 @@ class GatewayRunner:
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
+
+        elif platform == Platform.VK:
+            from gateway.platforms.vk import VKAdapter, check_vk_requirements
+            if not check_vk_requirements():
+                logger.warning("VK: requirements not met")
+                return None
+            return VKAdapter(config)
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
@@ -2212,6 +2221,7 @@ class GatewayRunner:
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.VK: "VK_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
@@ -2229,6 +2239,7 @@ class GatewayRunner:
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.VK: "VK_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
@@ -2300,6 +2311,30 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
+
+    async def _handle_vk_invite_approval(self, event: MessageEvent) -> Optional[str]:
+        """Approve a VK user with the standalone bridge-style invite code."""
+        expected_code = (os.getenv("VK_APPROVAL_CODE") or "").strip()
+        if not expected_code:
+            return None
+        try:
+            from gateway.platforms.vk import VKAdapter
+            submitted_code = VKAdapter.parse_approval_code(event.text or "")
+        except Exception:
+            submitted_code = None
+        if not submitted_code:
+            return None
+        if submitted_code != expected_code:
+            return "Access code is incorrect."
+
+        source = event.source
+        platform_name = source.platform.value if source.platform else "vk"
+        self.pairing_store.approve_user(
+            platform_name,
+            str(source.user_id),
+            source.user_name or "",
+        )
+        return "Access approved. You can now send Hermes requests from VK."
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -2328,6 +2363,10 @@ class GatewayRunner:
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
         elif not self._is_user_authorized(source):
+            if source.platform == Platform.VK and event.get_command() in ("approve", "code", "код"):
+                approval_response = await self._handle_vk_invite_approval(event)
+                if approval_response is not None:
+                    return approval_response
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":

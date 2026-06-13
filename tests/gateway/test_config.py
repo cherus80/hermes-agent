@@ -223,6 +223,45 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_vk_group_token_env_enables_vk_platform(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "VK_GROUP_TOKEN": "vk-token",
+                "VK_POLL_INTERVAL": "4.5",
+                "VK_HOME_CHANNEL": "123456789",
+                "VK_HOME_CHANNEL_NAME": "VK Home",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        vk_config = config.platforms[Platform.VK]
+        assert vk_config.enabled is True
+        assert vk_config.token == "vk-token"
+        assert vk_config.extra["poll_interval"] == "4.5"
+        assert vk_config.home_channel.chat_id == "123456789"
+        assert vk_config.home_channel.name == "VK Home"
+
+    def test_vk_legacy_bridge_env_enables_vk_platform(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "vk_bridge.env").write_text(
+            "VK_GROUP_TOKEN=vk-from-file\n"
+            "VK_ALLOWED_USERS=123\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=True):
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.VK].enabled is True
+        assert config.platforms[Platform.VK].token == "vk-from-file"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

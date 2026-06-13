@@ -134,6 +134,11 @@ class PairingStore:
         }
         self._save_json(self._approved_path(platform), approved)
 
+    def approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
+        """Approve a user directly without a pending owner-approved code."""
+        with self._lock:
+            self._approve_user(platform, user_id, user_name)
+
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
         path = self._approved_path(platform)

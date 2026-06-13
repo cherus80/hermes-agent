@@ -68,7 +68,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'vk:123456789', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
             },
             "message": {
                 "type": "string",
@@ -147,6 +147,7 @@ def _handle_send(args):
 
     platform_map = {
         "telegram": Platform.TELEGRAM,
+        "vk": Platform.VK,
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
@@ -324,6 +325,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter
     from gateway.platforms.telegram import TelegramAdapter
+    from gateway.platforms.vk import VKAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
 
@@ -346,6 +348,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
+        Platform.VK: VKAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
@@ -381,11 +384,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    # --- VK: text and native media attachments ---
+    if platform == Platform.VK:
+        return await _send_vk(pconfig, chat_id, message, media_files=media_files)
+
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"send_message MEDIA delivery is currently only supported for telegram and vk; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -393,7 +400,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            "native send_message media delivery is currently only supported for telegram and vk"
         )
 
     last_result = None
@@ -561,6 +568,63 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
         return _error(f"Telegram send failed: {e}")
+
+
+async def _send_vk(pconfig, chat_id, message, media_files=None):
+    """Send via VK community messages API."""
+    try:
+        from gateway.platforms.vk import VKAdapter
+
+        adapter = VKAdapter(pconfig)
+        media_files = media_files or []
+        last_result = None
+        warnings = []
+
+        if message.strip():
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"VK send failed: {result.error}")
+            last_result = result
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                warning = f"Media file not found, skipping: {media_path}"
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in _VIDEO_EXTS:
+                result = await adapter.send_video(chat_id, media_path)
+            elif ext in _VOICE_EXTS and is_voice:
+                result = await adapter.send_voice(chat_id, media_path)
+            else:
+                result = await adapter.send_document(chat_id, media_path)
+            if not result.success:
+                warning = _sanitize_error_text(f"Failed to send media {media_path}: {result.error}")
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
+            last_result = result
+
+        if last_result is None:
+            error = "No deliverable text or media remained after processing MEDIA tags"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        response = {
+            "success": True,
+            "platform": "vk",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+        if warnings:
+            response["warnings"] = warnings
+        return response
+    except Exception as e:
+        return _error(f"VK send failed: {e}")
 
 
 async def _send_discord(token, chat_id, message, thread_id=None):

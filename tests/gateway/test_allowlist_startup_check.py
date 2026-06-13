@@ -11,6 +11,7 @@ def _would_warn():
         for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                    "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+                   "VK_ALLOWED_USERS",
                    "EMAIL_ALLOWED_USERS",
                    "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                    "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
@@ -20,6 +21,7 @@ def _would_warn():
         os.getenv(v, "").lower() in ("true", "1", "yes")
         for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
                    "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+                   "VK_ALLOW_ALL_USERS",
                    "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                    "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                    "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS")
@@ -39,6 +41,10 @@ class TestAllowlistStartupCheck:
 
     def test_telegram_allow_all_users_suppresses_warning(self):
         with patch.dict(os.environ, {"TELEGRAM_ALLOW_ALL_USERS": "true"}, clear=True):
+            assert _would_warn() is False
+
+    def test_vk_allowed_users_suppresses_warning(self):
+        with patch.dict(os.environ, {"VK_ALLOWED_USERS": "123456789"}, clear=True):
             assert _would_warn() is False
 
     def test_gateway_allow_all_users_suppresses_warning(self):

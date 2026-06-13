@@ -302,6 +302,13 @@ PLATFORM_HINTS = {
         "bubbles, and videos (.mp4) play inline. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
+    "vk": (
+        "You are chatting via VKontakte (VK). VK messages support plain text "
+        "and simple links; markdown rendering is limited. Keep formatting clean "
+        "and avoid large tables. You can send media files natively: include "
+        "MEDIA:/absolute/path/to/file in your response. Images are sent as photos "
+        "and other files are sent as downloadable documents."
+    ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
