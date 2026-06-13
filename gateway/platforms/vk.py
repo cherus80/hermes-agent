@@ -45,6 +45,64 @@ _APPROVE_RE = re.compile(
     r"^(?:/approve|approve|/код|код|/code|code)\s+(.+?)\s*$",
     re.IGNORECASE,
 )
+_BUTTON_LABEL_COMMANDS = {
+    "команды": "/commands",
+    "модель": "/model",
+    "статус": "/status",
+    "новый чат": "/new",
+    "сброс": "/reset",
+    "помощь": "/help",
+    "разрешить": "/approve",
+    "на сессию": "/approve session",
+    "всегда": "/approve always",
+    "отклонить": "/deny",
+}
+
+
+def _vk_text_button(label: str, command: str, color: str = "secondary") -> dict[str, Any]:
+    return {
+        "action": {
+            "type": "text",
+            "label": label,
+            "payload": json.dumps({"command": command}, ensure_ascii=False),
+        },
+        "color": color,
+    }
+
+
+def _vk_keyboard(rows: list[list[tuple[str, str, str]]], *, inline: bool = False) -> str:
+    return json.dumps(
+        {
+            "one_time": False,
+            "inline": inline,
+            "buttons": [
+                [_vk_text_button(label, command, color) for label, command, color in row]
+                for row in rows
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _payload_command(msg: dict[str, Any]) -> str:
+    payload = msg.get("payload")
+    if not payload:
+        return ""
+    try:
+        data = json.loads(payload) if isinstance(payload, str) else payload
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    command = data.get("command")
+    if not isinstance(command, str):
+        return ""
+    command = command.strip()
+    return command if command.startswith("/") else ""
+
+
+def _button_label_command(text: str) -> str:
+    return _BUTTON_LABEL_COMMANDS.get((text or "").strip().lower(), "")
 
 
 def _legacy_env_path() -> Path:
@@ -265,6 +323,11 @@ class VKAdapter(BasePlatformAdapter):
             os.getenv("VK_GATEWAY_STATE_PATH")
             or str(get_hermes_home() / "state" / "vk_gateway_adapter_state.json")
         ).expanduser()
+        self.command_keyboard_enabled = str(
+            config.extra.get("command_keyboard")
+            or os.getenv("VK_COMMAND_KEYBOARD")
+            or "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}
         self._poll_task: Optional[asyncio.Task] = None
         self._seen_ids: set[str] = set()
         self._load_state()
@@ -354,7 +417,8 @@ class VKAdapter(BasePlatformAdapter):
             self._seen_ids.add(seen_key)
             self._save_state()
 
-            text = (msg.get("text") or "").strip()
+            raw_text = (msg.get("text") or "").strip()
+            text = _payload_command(msg) or _button_label_command(raw_text) or raw_text
             media_urls, media_types, media_message_type = await self._collect_attachments(msg)
             chat_type = "group" if peer_id >= 2_000_000_000 else "dm"
             message_type = self._message_type_for(text, media_message_type)
@@ -385,6 +449,39 @@ class VKAdapter(BasePlatformAdapter):
             )
             await self.handle_message(event)
             await self._mark_read(peer_id)
+
+    @staticmethod
+    def _main_keyboard() -> str:
+        return _vk_keyboard(
+            [
+                [
+                    ("Команды", "/commands", "primary"),
+                    ("Модель", "/model", "primary"),
+                    ("Статус", "/status", "secondary"),
+                ],
+                [
+                    ("Новый чат", "/new", "secondary"),
+                    ("Сброс", "/reset", "secondary"),
+                    ("Помощь", "/help", "secondary"),
+                ],
+            ],
+        )
+
+    @staticmethod
+    def _approval_keyboard() -> str:
+        return _vk_keyboard(
+            [
+                [
+                    ("Разрешить", "/approve", "positive"),
+                    ("На сессию", "/approve session", "primary"),
+                ],
+                [
+                    ("Всегда", "/approve always", "primary"),
+                    ("Отклонить", "/deny", "negative"),
+                ],
+            ],
+            inline=True,
+        )
 
     async def _collect_attachments(self, msg: dict[str, Any]) -> tuple[list[str], list[str], MessageType]:
         media_urls: list[str] = []
@@ -436,20 +533,78 @@ class VKAdapter(BasePlatformAdapter):
             first_message_id: Optional[str] = None
             raw = None
             base = random.randint(1, 2_000_000_000)
-            for index, part in enumerate(split_vk_text(content)):
-                raw = await self._vk_api(
-                    "messages.send",
-                    {
-                        "peer_id": str(chat_id),
-                        "random_id": str((base + index) % 2_147_483_647),
-                        "message": part,
-                    },
+            parts = split_vk_text(content)
+            for index, part in enumerate(parts):
+                keyboard = (
+                    self._main_keyboard()
+                    if self.command_keyboard_enabled and index == len(parts) - 1
+                    else None
+                )
+                raw = await self._send_text_part(
+                    chat_id=str(chat_id),
+                    message=part,
+                    random_id=str((base + index) % 2_147_483_647),
+                    keyboard=keyboard,
                 )
                 if first_message_id is None:
                     first_message_id = str(raw)
             return SendResult(success=True, message_id=first_message_id, raw_response=raw)
         except Exception as exc:
             logger.warning("[VK] send failed chat=%s: %s", chat_id, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def _send_text_part(
+        self,
+        *,
+        chat_id: str,
+        message: str,
+        random_id: str,
+        keyboard: Optional[str] = None,
+    ) -> Any:
+        payload = {
+            "peer_id": str(chat_id),
+            "random_id": str(random_id),
+            "message": message,
+        }
+        if keyboard:
+            payload["keyboard"] = keyboard
+
+        try:
+            return await self._vk_api("messages.send", payload)
+        except Exception:
+            if not keyboard:
+                raise
+            logger.debug("[VK] send with keyboard failed; retrying without keyboard", exc_info=True)
+            payload.pop("keyboard", None)
+            return await self._vk_api("messages.send", payload)
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a VK approval prompt with command buttons."""
+        del session_key, metadata
+        try:
+            cmd_preview = command[:2600] + "..." if len(command) > 2600 else command
+            text = (
+                "⚠️ **Нужно подтверждение опасной команды:**\n"
+                f"```\n{cmd_preview}\n```\n"
+                f"Причина: {description}\n\n"
+                "Нажми кнопку ниже."
+            )
+            raw = await self._send_text_part(
+                chat_id=str(chat_id),
+                message=text,
+                random_id=str(random.randint(1, 2_000_000_000)),
+                keyboard=self._approval_keyboard(),
+            )
+            return SendResult(success=True, message_id=str(raw), raw_response=raw)
+        except Exception as exc:
+            logger.warning("[VK] send_exec_approval failed chat=%s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=True)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str) -> SendResult:
