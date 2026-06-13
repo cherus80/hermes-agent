@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -78,6 +79,27 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
+
+
+async def _build_channel_directory_async(adapters):
+    from gateway.channel_directory import build_channel_directory
+
+    directory = build_channel_directory(adapters)
+    if inspect.isawaitable(directory):
+        directory = await directory
+    return directory
+
+
+def _refresh_channel_directory_from_thread(adapters, loop=None) -> None:
+    from gateway.channel_directory import build_channel_directory
+
+    directory = build_channel_directory(adapters)
+    if not inspect.isawaitable(directory):
+        return
+    if loop is not None and loop.is_running():
+        asyncio.run_coroutine_threadsafe(directory, loop)
+    else:
+        asyncio.run(directory)
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -1642,8 +1664,7 @@ class GatewayRunner:
         
         # Build initial channel directory for send_message name resolution
         try:
-            from gateway.channel_directory import build_channel_directory
-            directory = build_channel_directory(self.adapters)
+            directory = await _build_channel_directory_async(self.adapters)
             ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
@@ -1880,8 +1901,7 @@ class GatewayRunner:
 
                         # Rebuild channel directory with the new adapter
                         try:
-                            from gateway.channel_directory import build_channel_directory
-                            build_channel_directory(self.adapters)
+                            await _build_channel_directory_async(self.adapters)
                         except Exception:
                             pass
                     else:
@@ -8555,8 +8575,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
-                from gateway.channel_directory import build_channel_directory
-                build_channel_directory(adapters)
+                _refresh_channel_directory_from_thread(adapters, loop=loop)
             except Exception as e:
                 logger.debug("Channel directory refresh error: %s", e)
 
