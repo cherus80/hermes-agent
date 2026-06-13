@@ -3159,19 +3159,19 @@ class GatewayRunner:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
                         if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
+                            reason_text = "предыдущая сессия была остановлена или прервана"
                         elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
+                            reason_text = f"ежедневное расписание в {policy.at_hour}:00"
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
+                            duration = f"{hours} ч" if not mins else f"{hours} ч {mins} мин" if hours else f"{mins} мин"
+                            reason_text = f"не было активности {duration}"
                         notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            f"◐ Сессия автоматически сброшена ({reason_text}). "
+                            f"История диалога очищена.\n"
+                            f"Используй /resume, чтобы посмотреть и восстановить прошлую сессию.\n"
+                            f"Время сброса можно изменить в config.yaml в разделе session_reset."
                         )
                         try:
                             session_info = self._format_session_info()
@@ -3486,11 +3486,11 @@ class GatewayRunner:
                 if adapter:
                     await adapter.send(
                         source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
-                        f"A home channel is where Hermes delivers cron job results "
-                        f"and cross-platform messages.\n\n"
-                        f"Type /sethome to make this chat your home channel, "
-                        f"or ignore to skip."
+                        f"📬 Для {platform_name.title()} не задан домашний канал. "
+                        f"Домашний канал нужен, чтобы Hermes присылал результаты cron-задач "
+                        f"и сообщения между платформами.\n\n"
+                        f"Напиши /sethome, чтобы сделать этот чат домашним каналом, "
+                        f"или просто проигнорируй это сообщение."
                     )
         
         # -----------------------------------------------------------------
@@ -3584,14 +3584,14 @@ class GatewayRunner:
 
                 if _is_ctx_fail:
                     response = (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ Сессия слишком большая для контекстного окна модели.\n"
+                        "Используй /compact, чтобы сжать диалог, или "
+                        "/reset, чтобы начать заново."
                     )
                 else:
                     response = (
-                        f"The request failed: {str(error_detail)[:300]}\n"
-                        "Try again or use /reset to start a fresh session."
+                        f"Запрос не выполнился: {str(error_detail)[:300]}\n"
+                        "Попробуй ещё раз или используй /reset, чтобы начать новую сессию."
                     )
 
             # If the agent's session_id changed during compression, update
@@ -3793,7 +3793,7 @@ class GatewayRunner:
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+                status_hint = " Проверь API-ключ или выполни `claude /login`, чтобы обновить OAuth-доступ."
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -3808,30 +3808,30 @@ class GatewayRunner:
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = f" Лимит плана исчерпан, сброс примерно через {_hours} ч."
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " Лимит плана исчерпан, дождись его сброса."
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " Сработало ограничение частоты запросов. Подожди немного и попробуй снова."
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " API временно перегружен. Попробуй ещё раз чуть позже."
             elif status_code in (400, 500):
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ Сессия слишком большая для контекстного окна модели.\n"
+                        "Используй /compact, чтобы сжать диалог, или "
+                        "/reset, чтобы начать заново."
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " Запрос был отклонён API."
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
+                f"Извини, произошла ошибка ({error_type}).\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                "Попробуй ещё раз или используй /reset, чтобы начать новую сессию."
             )
         finally:
             # Restore session context variables to their pre-handler state

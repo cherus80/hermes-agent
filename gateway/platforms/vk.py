@@ -337,12 +337,14 @@ class VKAdapter(BasePlatformAdapter):
         )
         for item in (resp or {}).get("items", []):
             msg = item.get("last_message") or {}
-            if msg.get("out") == 1:
+            admin_author_id = int(msg.get("admin_author_id") or 0)
+            is_admin_message = msg.get("out") == 1 and admin_author_id > 0
+            if msg.get("out") == 1 and not is_admin_message:
                 continue
 
             msg_id = int(msg.get("id") or 0)
             peer_id = int(msg.get("peer_id") or 0)
-            from_id = int(msg.get("from_id") or peer_id or 0)
+            from_id = admin_author_id if is_admin_message else int(msg.get("from_id") or peer_id or 0)
             if msg_id <= 0 or peer_id <= 0:
                 continue
 
@@ -372,7 +374,15 @@ class VKAdapter(BasePlatformAdapter):
                 media_urls=media_urls,
                 media_types=media_types,
             )
-            logger.info("[VK] inbound peer=%s from=%s msg_id=%s text=%r", peer_id, from_id, msg_id, text[:80])
+            origin = "admin" if is_admin_message else "user"
+            logger.info(
+                "[VK] inbound peer=%s from=%s msg_id=%s origin=%s text=%r",
+                peer_id,
+                from_id,
+                msg_id,
+                origin,
+                text[:80],
+            )
             await self.handle_message(event)
             await self._mark_read(peer_id)
 
