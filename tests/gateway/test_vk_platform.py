@@ -239,3 +239,54 @@ async def test_vk_send_exec_approval_uses_command_keyboard():
         for button in row
     ]
     assert commands == ["/approve", "/approve session", "/approve always", "/deny"]
+
+
+@pytest.mark.asyncio
+async def test_vk_send_keyboard_scope_error_adds_user_notice():
+    adapter = VKAdapter(PlatformConfig(enabled=True, token="vk-token"))
+    calls = []
+
+    async def fake_vk_api(method, payload):
+        calls.append((method, payload.copy()))
+        if "keyboard" in payload:
+            raise RuntimeError(
+                "VK API messages.send: {'error_code': 912, "
+                "'error_msg': 'This is a chat bot feature, change this status in settings'}"
+            )
+        return 789
+
+    adapter._vk_api = fake_vk_api
+
+    result = await adapter.send("327943125", "готово")
+
+    assert result.success is True
+    assert "keyboard" in calls[0][1]
+    assert "keyboard" not in calls[1][1]
+    assert "Возможности ботов" in calls[1][1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_vk_send_attachment_scope_error_sends_notice(tmp_path, monkeypatch):
+    adapter = VKAdapter(PlatformConfig(enabled=True, token="vk-token"))
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"fake image")
+    calls = []
+
+    def fake_upload(token, peer_id, file_path):
+        raise RuntimeError(
+            "VK API photos.getMessagesUploadServer: {'error_code': 15, "
+            "'error_subcode': 1133, 'error_msg': 'It cannot be called with current scopes.'}"
+        )
+
+    async def fake_vk_api(method, payload):
+        calls.append((method, payload.copy()))
+        return 321
+
+    monkeypatch.setattr("gateway.platforms.vk.upload_vk_attachment_sync", fake_upload)
+    adapter._vk_api = fake_vk_api
+
+    result = await adapter.send_image_file("327943125", str(image_path))
+
+    assert result.success is False
+    assert calls[-1][0] == "messages.send"
+    assert "VK_GROUP_TOKEN" in calls[-1][1]["message"]

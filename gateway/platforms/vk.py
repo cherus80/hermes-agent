@@ -57,6 +57,16 @@ _BUTTON_LABEL_COMMANDS = {
     "всегда": "/approve always",
     "отклонить": "/deny",
 }
+_BOT_FEATURES_NOTICE = (
+    "\n\n⚠️ VK не показал кнопки: в сообществе выключены «Возможности ботов». "
+    "Открой VK → Управление сообществом → Сообщения → Настройки для бота "
+    "и включи «Возможности ботов»."
+)
+_MEDIA_SCOPE_NOTICE = (
+    "⚠️ VK не дал отправить файл или изображение: текущему VK_GROUP_TOKEN не "
+    "хватает прав на медиа. Создай новый токен сообщества с правами messages, "
+    "photos и docs, затем вставь его как VK_GROUP_TOKEN."
+)
 
 
 def _vk_text_button(label: str, command: str, color: str = "secondary") -> dict[str, Any]:
@@ -108,6 +118,29 @@ def _payload_command(msg: dict[str, Any]) -> str:
 
 def _button_label_command(text: str) -> str:
     return _BUTTON_LABEL_COMMANDS.get((text or "").strip().lower(), "")
+
+
+def _vk_error_code(exc: Exception) -> int | None:
+    match = re.search(r"['\"]error_code['\"]\s*:\s*(\d+)", str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _vk_error_subcode(exc: Exception) -> int | None:
+    match = re.search(r"['\"]error_subcode['\"]\s*:\s*(\d+)", str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _is_bot_features_error(exc: Exception) -> bool:
+    return _vk_error_code(exc) == 912 or "chat bot feature" in str(exc).lower()
+
+
+def _is_token_scope_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        _vk_error_subcode(exc) == 1133
+        or "current scopes" in text
+        or "no access to call this method" in text
+    )
 
 
 def _legacy_env_path() -> Path:
@@ -333,6 +366,8 @@ class VKAdapter(BasePlatformAdapter):
             or os.getenv("VK_COMMAND_KEYBOARD")
             or "1"
         ).strip().lower() not in {"0", "false", "no", "off"}
+        self._keyboard_notice_chats: set[str] = set()
+        self._media_scope_notice_chats: set[str] = set()
         self._poll_task: Optional[asyncio.Task] = None
         self._seen_ids: set[str] = set()
         self._load_state()
@@ -581,6 +616,9 @@ class VKAdapter(BasePlatformAdapter):
                 raise
             logger.warning("[VK] send with keyboard failed; retrying without keyboard: %s", exc)
             payload.pop("keyboard", None)
+            if _is_bot_features_error(exc) and chat_id not in self._keyboard_notice_chats:
+                payload["message"] = f"{message}{_BOT_FEATURES_NOTICE}"
+                self._keyboard_notice_chats.add(chat_id)
             return await self._vk_api("messages.send", payload)
 
     async def send_exec_approval(
@@ -599,7 +637,8 @@ class VKAdapter(BasePlatformAdapter):
                 "⚠️ **Нужно подтверждение опасной команды:**\n"
                 f"```\n{cmd_preview}\n```\n"
                 f"Причина: {description}\n\n"
-                "Нажми кнопку ниже."
+                "Нажми кнопку ниже. Если кнопок нет, отправь `/approve`, "
+                "`/approve session`, `/approve always` или `/deny` вручную."
             )
             raw = await self._send_text_part(
                 chat_id=str(chat_id),
@@ -611,6 +650,16 @@ class VKAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[VK] send_exec_approval failed chat=%s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def _send_plain_notice(self, chat_id: str, text: str) -> None:
+        try:
+            await self._send_text_part(
+                chat_id=str(chat_id),
+                message=text,
+                random_id=str(random.randint(1, 2_000_000_000)),
+            )
+        except Exception as notice_exc:
+            logger.debug("[VK] failed to send notice chat=%s: %s", chat_id, notice_exc)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str) -> SendResult:
         try:
@@ -649,6 +698,9 @@ class VKAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(raw), raw_response=raw)
         except Exception as exc:
             logger.warning("[VK] attachment send failed chat=%s path=%s: %s", chat_id, path, exc)
+            if _is_token_scope_error(exc) and str(chat_id) not in self._media_scope_notice_chats:
+                self._media_scope_notice_chats.add(str(chat_id))
+                await self._send_plain_notice(str(chat_id), _MEDIA_SCOPE_NOTICE)
             return SendResult(success=False, error=str(exc), retryable=True)
 
     async def send_image_file(
